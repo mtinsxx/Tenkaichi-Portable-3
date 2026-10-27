@@ -56,3 +56,7 @@ Goal: keep BT3's fighter meshes, animation, gameplay and anime outline while red
 - Host invariants and pspdev EBOOT CI must pass; no copyrighted ISO, ELF or extracted game assets committed.
 - A render optimization must preserve characters, menus, colour, clipping, alpha and frame order or remain behind an explicit rollback.
 - When runtime tests are absent, report code change and build success only — **do not claim measured FPS improvements**.
+
+### Phase 1: physical display FBP aliasing (October 27)
+
+The current PS2 GS display FBP and its paired previous FBP are distinct surfaces. The PSP mapping accidentally put both on the *active* draw buffer, causing sampling to fail the self-alias guard and fall back to possibly stale emulated GS memory (no GPU readback). Use the *other* PSP physical display buffer for the paired FBP. Keep all auxiliary FBPs mapped to WORK. `scene_pair_separate=0` rolls this mapping back for A/B visual tests. Separate logical WORK owners now force a GU batch boundary. Routing tests and PSP compilation do **not** verify the black stage has been fixed at runtime.

@@ -11,4 +11,15 @@ static inline int Psp_GsScenePairIsScreen(uint32_t fbp, int current,
     return enable && paired >= 0 && paired != current &&
            fbp == (uint32_t)paired;
 }
+/* Two PS2 libgraph display FBPs represent different images. The paired
+   *previous* picture lives in the PSP's other physical screen buffer.
+   Keep auxiliary FBPs in WORK, never sharing the active screen. */
+static inline unsigned Psp_GsScenePairBackingOffset(
+        uint32_t fbp, int current, int paired, int enable, int separate,
+        unsigned draw, unsigned other, unsigned work) {
+    if (current < 0 || fbp == (uint32_t)current) return draw;
+    if (enable && paired >= 0 && paired != current &&
+        fbp == (uint32_t)paired) return separate ? other : draw;
+    return work;
+}
 #endif

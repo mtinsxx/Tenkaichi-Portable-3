@@ -63,6 +63,8 @@ int gPspSwapFromSdk = 1;
 /* Stage/display experiment, not texture or VU1 changes.
    scene_pair_screen=0 restores the historical routing. */
 int gPspScenePairScreen = 1;
+/* Preserve paired previous GS frame on the other PSP screen buffer. */
+int gPspScenePairSeparate = 1; /* 0 reverts original physical aliasing */
 /* Experimental only: last change could make stage black because
    PSP framebuffer readbacks and ownership are not fully implemented. */
 int gPspTargetFreshness = 0; /* rollback: latest battle screenshot lost stage background */
@@ -315,6 +317,8 @@ static void setting(const char *name, const char *value) {
         gPspSwapFromSdk = atoi(value) != 0;
     } else if (strcmp(name, "scene_pair_screen") == 0) {
         gPspScenePairScreen = atoi(value) != 0;
+    } else if (strcmp(name, "scene_pair_separate") == 0) {
+        gPspScenePairSeparate = atoi(value) != 0;
     } else if (strcmp(name, "target_freshness") == 0) {
         gPspTargetFreshness = atoi(value) != 0;
     } else if (strcmp(name, "hud_top_overlay") == 0) {
@@ -494,6 +498,8 @@ int __wrap_main(int argc, char **argv) {
             gPspGsFixScale, gPspGsClutReuse, gPspGsDepth, gPspGsHiTex);
     Psp_Log("psp: texture LOD: tex_limit=%d (0: original; 256: balanced; 128: lighter, 3D polygons only)\n",
             gPspTexLimit);
+    Psp_Log("psp: GS paired framebuffer separate physical backing=%d (0: previous shared behavior)\n",
+            gPspScenePairSeparate);
     Psp_Log("psp: native stage VU1 program4=%d (automatic conservative fallback)\n",
             gPspNativeStage4);
     Psp_Log("psp: native fighter VU1 programs0/1=%d (bone animation, lighting; interpreter on rejected batches)\n",

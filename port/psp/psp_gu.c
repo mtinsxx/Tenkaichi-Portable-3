@@ -274,6 +274,7 @@ extern int gPspTargetFreshness;
 extern int gGsMainFbp; /* gs_sony.c: the frame buffer the frame is drawn into */
 extern int gGsDisplayOtherFbp; /* libgraph's paired SCREEN buffer */
 extern int gPspScenePairScreen;
+extern int gPspScenePairSeparate;
 static unsigned sPairedDisplayRouted, sPairedDisplayFrames, sPairedThisFrame;
 static unsigned sPairedScreenDraws, sPairedWorkDraws;
 static unsigned gPspGuFlushes;
@@ -510,10 +511,11 @@ static void *tex_alloc_ram(unsigned bytes, void **heap_alloc) {
    opening/menus the GS uses more than one FBP, which previously all mapped
    to FB0 and drew black rectangles over the actual title screen. */
 static void *target_color(uint32_t fbp) {
-    int screen = Psp_GsScenePairIsScreen(fbp, gGsMainFbp,
-                                         gGsDisplayOtherFbp,
-                                         gPspScenePairScreen);
-    return sVram + (screen ? sMainDrawOffset : WORK_OFF);
+    unsigned other = sMainDrawOffset == FB0_OFF ? FB1_OFF : FB0_OFF;
+    return sVram + Psp_GsScenePairBackingOffset(
+        fbp, gGsMainFbp, gGsDisplayOtherFbp,
+        gPspScenePairScreen, gPspScenePairSeparate,
+        sMainDrawOffset, other, WORK_OFF);
 }
 
 static int target_get(uint32_t fbp, int create) {
@@ -1429,6 +1431,9 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
     if (sTargets[targetIndex].color == sVram + WORK_OFF &&
         sWorkOwnerFbp != (uint32_t)fbp) {
         int k;
+        /* Different logical GS WORK owners require a GU submission
+           boundary even if their physical target and state coincide. */
+        flush();
         ++sFbWorkOwnerChanges;
         ++sFrameWorkOwners;
         for (k = 0; k < MAX_TARGETS; ++k) {
@@ -2372,8 +2377,8 @@ void Psp_GuStats(unsigned out[4]) {
     sDiagSkipPsm = sDiagSkipTexMem = sDiagSkipNoTarget = 0;
     sDiagAlphaKeep = sDiagAlphaOther = sDiagAlphaRefNonzero = 0;
     memset(sDiagAlphaOtherMode, 0, sizeof(sDiagAlphaOtherMode));
-    Psp_Log("psp: GS scene paired-screen: on=%d main=%d other=%d routed=%u frames=%u screen-draws=%u work-draws=%u\n",
-            gPspScenePairScreen, gGsMainFbp, gGsDisplayOtherFbp,
+    Psp_Log("psp: GS scene paired-screen: on=%d separate=%d main=%d other=%d routed=%u frames=%u screen-draws=%u work-draws=%u\n",
+            gPspScenePairScreen, gPspScenePairSeparate, gGsMainFbp, gGsDisplayOtherFbp,
             sPairedDisplayRouted, sPairedDisplayFrames,
             sPairedScreenDraws, sPairedWorkDraws);
     sPairedDisplayRouted = sPairedDisplayFrames = 0;
