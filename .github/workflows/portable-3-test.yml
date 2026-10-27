@@ -88,6 +88,13 @@ jobs:
           python3 port/psp/test_arch_safety.py
           python3 port/psp/test_native_diagnostics.py
 
+      - name: Test distinct GS 336 and 368 PSP work framebuffer ownership
+        run: |
+          set -euo pipefail
+          gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/psp \
+            port/psp/test_work_pair.c -o /tmp/tp3-work-pair
+          /tmp/tp3-work-pair
+
       - name: Compile PSP EBOOT using official pspdev SDK
         run: |
           set -euo pipefail

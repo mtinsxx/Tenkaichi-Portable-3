@@ -60,19 +60,21 @@
 #define FB0_OFF 0
 #define FB1_OFF FB_SIZE
 #define DEPTH_OFF (2 * FB_SIZE)
-/* PS2 auxiliary render targets must not overwrite the active PSP screen.
-   Reserve one 512x272 5551 working framebuffer from the spare VRAM.
-   (Multiple simultaneous PS2 effect targets still need a more complete
-   solution; this keeps the main picture isolated.) */
+/* The battle alternates GS FBPs 336 and 368. They MUST NOT overwrite
+   each other before a subsequent frame-as-texture sample. Reserve a
+   second real PSP 5551 framebuffer. PSP VRAM = 2 MiB; the trade-off is
+   272 KiB less VRAM texture space, not smaller fighter meshes. */
 #define WORK_OFF (DEPTH_OFF + DEPTH_SIZE)
 #define WORK_SIZE FB_SIZE
-#define TEX_OFF (WORK_OFF + WORK_SIZE)
+#define WORK2_OFF (WORK_OFF + WORK_SIZE)
+#define WORK2_SIZE FB_SIZE
+#define TEX_OFF (WORK2_OFF + WORK2_SIZE)
 #define TEX_SIZE (0x200000u - TEX_OFF)
 
 /* Guard the PSP's physical 2 MiB VRAM map at compile time. The three
    screen/depth surfaces and the one work surface must not overlap the
    texture region, regardless of later tuning. */
-#if FB1_OFF < (FB0_OFF + FB_SIZE) || DEPTH_OFF < (FB1_OFF + FB_SIZE) || WORK_OFF < (DEPTH_OFF + DEPTH_SIZE) || TEX_OFF < (WORK_OFF + WORK_SIZE)
+#if FB1_OFF < (FB0_OFF + FB_SIZE) || DEPTH_OFF < (FB1_OFF + FB_SIZE) || WORK_OFF < (DEPTH_OFF + DEPTH_SIZE) || WORK2_OFF < (WORK_OFF + WORK_SIZE) || TEX_OFF < (WORK2_OFF + WORK2_SIZE)
 #error "PSP GU frame/depth/work regions overlap"
 #endif
 #if TEX_OFF >= 0x200000u || TEX_SIZE < 4096u
@@ -104,6 +106,7 @@ typedef struct Vtx {         /* what the engine reads: texture coordinates, colo
 
 #include "psp_stage_tri_batch.h"
 #include "psp_target_lifetime.h"
+#include "psp_work_pair.h"
 
 typedef struct Tex {
     uint64_t tex0, texa;
@@ -269,9 +272,11 @@ static unsigned sFrameStageInputs, sFrameFighterInputs;
 static unsigned sFrameScreenDraws, sFrameWorkDraws, sFrameWorkOwners;
 static unsigned sFrameDiagShown, sFrameLastDiag;
 static unsigned sTargetsRegistered;
-/* Only one real auxiliary PSP framebuffer exists; logical GS FBP targets
-   that share it cannot all be considered valid at the same time. */
-static uint32_t sWorkOwnerFbp = UINT32_MAX;
+/* Each physical PSP WORK surface has its own logical GS owner.
+   GS 336 lives in WORK0, GS 368 in WORK1; other scratch targets
+   conservatively share WORK0, with strict owner invalidation. */
+static uint32_t sWorkOwnerFbp[PSP_WORK_SURFACES] = {UINT32_MAX,UINT32_MAX};
+static unsigned sWorkPairSamples, sWorkPairOwnerMisses;
 static unsigned sFbAliasHit, sFbAliasFallback, sFbAliasReupload;
 static unsigned sFbAliasUnrendered, sFbAliasSelf, sFbWorkOwnerChanges;
 static unsigned sTargetRebindInvalid, sTargetScreenCleared;
@@ -560,12 +565,23 @@ static void *tex_alloc_ram(unsigned bytes, void **heap_alloc) {
 /* A separate PSP framebuffer for the game's working passes. During the
    opening/menus the GS uses more than one FBP, which previously all mapped
    to FB0 and drew black rectangles over the actual title screen. */
+static int psp_is_work(const void *backing) {
+    return backing == sVram + WORK_OFF ||
+           backing == sVram + WORK2_OFF;
+}
+static int psp_work_slot(const void *backing) {
+    return backing == sVram + WORK2_OFF ? 1 :
+           backing == sVram + WORK_OFF ? 0 : -1;
+}
 static void *target_color(uint32_t fbp) {
     unsigned other = sMainDrawOffset == FB0_OFF ? FB1_OFF : FB0_OFF;
-    return sVram + Psp_GsScenePairBackingOffset(
+    unsigned off = Psp_GsScenePairBackingOffset(
         fbp, gGsMainFbp, gGsDisplayOtherFbp,
         gPspScenePairScreen, gPspScenePairSeparate,
         sMainDrawOffset, other, WORK_OFF);
+    if (off == WORK_OFF && PspWork_Slot(fbp) == 1u)
+        off = WORK2_OFF;
+    return sVram + off;
 }
 
 static int target_get(uint32_t fbp, int create) {
@@ -614,7 +630,7 @@ static int target_get(uint32_t fbp, int create) {
     if (++sTargetsRegistered <= 8) {
         Psp_Log("psp: GS framebuffer #%u fbp=%u mapped %s\n",
                 sTargetsRegistered, fbp,
-                sTargets[slot].color == sVram + WORK_OFF ? "WORK" : "SCREEN");
+                psp_is_work(sTargets[slot].color) ? "WORK" : "SCREEN");
     }
     return slot;
 }
@@ -1022,9 +1038,9 @@ static void state_apply(void) {
        Special FB16/depth-as-texture passes are not yet fully mapped. */
     {
         int depthHere = gPspGsDepth == 1 ||
-                        (gPspGsDepth == 2 && sSt.target != sVram + WORK_OFF);
+                        (gPspGsDepth == 2 && !psp_is_work(sSt.target));
         int depthPrev = gPspGsDepth == 1 ||
-                        (gPspGsDepth == 2 && p->target != sVram + WORK_OFF);
+                        (gPspGsDepth == 2 && !psp_is_work(p->target));
         if (!depthHere) {
             if (first || depthPrev) {
                 sceGuDisable(GU_DEPTH_TEST);
@@ -1073,6 +1089,7 @@ static void state_apply(void) {
            SAME address; therefore always invalidate on a FB texture bind,
            even when the other texture registers were unchanged. */
         if (sSt.tex == sVram + WORK_OFF ||
+            sSt.tex == sVram + WORK2_OFF ||
             sSt.tex == sVram + FB0_OFF ||
             sSt.tex == sVram + FB1_OFF) {
             sceGuTexFlush();
@@ -1325,7 +1342,10 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
                 /* Two PS2 display FBPs can share one PSP draw surface,
                    which must never be read as texture while being written. */
                 old->color != target_color((uint32_t)fbp) &&
-                (old->color != sVram + WORK_OFF || sWorkOwnerFbp == old->fbp)) {
+                (!psp_is_work(old->color) ||
+                 PspWork_OwnerAllowsSample(
+                      sWorkOwnerFbp[psp_work_slot(old->color)],old->fbp))) {
+                if (psp_is_work(old->color)) ++sWorkPairSamples;
                 targetReady = 1;
                 ++sFbAliasHit;
                 Psp_DiagAllIncident(PSP_DIAG_FB_ALIAS_VALID,ctx,tbp);
@@ -1340,8 +1360,10 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
                 } else if (old->fbp == (uint32_t)fbp) {
                     ++sFbAliasSelf;
                     Psp_DiagAllIncident(PSP_DIAG_FB_SELF_ALIAS,ctx,old->fbp);
-                } else if (old->color == sVram + WORK_OFF &&
-                           sWorkOwnerFbp != old->fbp) {
+                } else if (psp_is_work(old->color) &&
+                           !PspWork_OwnerAllowsSample(
+                                sWorkOwnerFbp[psp_work_slot(old->color)],old->fbp)) {
+                    ++sWorkPairOwnerMisses;
                     Psp_DiagAllIncident(PSP_DIAG_FB_WORK_OWNER,ctx,old->fbp);
                 } else {
                     Psp_DiagAllIncident(PSP_DIAG_FB_OTHER_ALIAS,ctx,old->fbp);
@@ -1405,11 +1427,11 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
        this is actually a 2-vertex GS sprite. */
     if (type == 6) {
         topHudSprite = Psp_GsIsBattleHudSprite(type,
-            sTargets[targetIndex].color != sVram + WORK_OFF,
+            !psp_is_work(sTargets[targetIndex].color),
             v[0].x, v[0].y, v[1].x, v[1].y);
     }
     if (gPspHudMaskFix && type == 6 &&
-        sTargets[targetIndex].color != sVram + WORK_OFF &&
+        !psp_is_work(sTargets[targetIndex].color) &&
         Psp_GsIsFullHudAlphaResetStrip(
             (unsigned)type, (unsigned)prim, (unsigned)gGs.alpha[ctx],
             (unsigned)test, v[0].x, v[0].y, v[1].x, v[1].y,
@@ -1425,7 +1447,7 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
             ++sHudMaskFullClearSweeps;
     }
     if (gPspHudMaskFix && type == 3 &&
-        sTargets[targetIndex].color != sVram + WORK_OFF) {
+        !psp_is_work(sTargets[targetIndex].color)) {
         /* HUD texture rectangles use four-vertex PS2 TRIANGLE STRIPS
            (PRIM=0x154), dispatched as two GsGpu_Draw(type=3) calls.
            Previous fix wrongly selected only PRIM=SPRITE/type=6. */
@@ -1448,7 +1470,7 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
         ++sHudTopTfxModes[(unsigned)((t0 >> 35) & 3u)];
         ++sHudTopClampModes[(unsigned)(cl & 3u)];
     }
-    if (sTargets[targetIndex].color == sVram + WORK_OFF) {
+    if (psp_is_work(sTargets[targetIndex].color)) {
         ++sDiagDrawWork;
         ++sFrameWorkDraws;
         ++sPairedWorkDraws;
@@ -1468,7 +1490,7 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
        Psp_GuStats every two seconds. */
     if (type == 3) {
         ++sDiagZTri;
-        if (sTargets[targetIndex].color == sVram + WORK_OFF) ++sDiagZTriWork;
+        if (psp_is_work(sTargets[targetIndex].color)) ++sDiagZTriWork;
         if ((test >> 16) & 1) {
             ++sDiagZTriTest;
             ++sDiagZFunc[(test >> 17) & 3];
@@ -1493,25 +1515,24 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
             ++sDiagAlphaOtherMode[failMode];
         }
     }
-    /* The PSP reserves one shared scratch framebuffer, NOT a separate
-       image for each offscreen GS FBP. When a different FBP writes to it,
-       every earlier logical owner has lost its pixels. */
-    if (sTargets[targetIndex].color == sVram + WORK_OFF &&
-        sWorkOwnerFbp != (uint32_t)fbp) {
-        int k;
-        /* Different logical GS WORK owners require a GU submission
-           boundary even if their physical target and state coincide. */
-        flush();
-        ++sFbWorkOwnerChanges;
-        ++sFrameWorkOwners;
-        Psp_DiagAllIncident(PSP_DIAG_FB_WORK_REPLACED,ctx,sWorkOwnerFbp);
-        for (k = 0; k < MAX_TARGETS; ++k) {
-            if (k != targetIndex && sTargets[k].used &&
-                sTargets[k].color == sVram + WORK_OFF) {
-                sTargets[k].rendered = 0;
-            }
+    /* Invalidate only when a DIFFERENT logical GS FBP replaces the
+       owner of the SAME physical PSP work buffer. The 336/368 pair
+       remains alive concurrently on separate VRAM surfaces. */
+    {
+        int workSlot = psp_work_slot(sTargets[targetIndex].color);
+        if (workSlot >= 0 && sWorkOwnerFbp[workSlot] != (uint32_t)fbp) {
+            int k;
+            flush();
+            ++sFbWorkOwnerChanges;
+            ++sFrameWorkOwners;
+            Psp_DiagAllIncident(PSP_DIAG_FB_WORK_REPLACED,ctx,
+                                sWorkOwnerFbp[workSlot]);
+            for (k = 0; k < MAX_TARGETS; ++k)
+                if (k != targetIndex && sTargets[k].used &&
+                    sTargets[k].color == sTargets[targetIndex].color)
+                    sTargets[k].rendered = 0;
+            sWorkOwnerFbp[workSlot] = (uint32_t)fbp;
         }
-        sWorkOwnerFbp = (uint32_t)fbp;
     }
     /* Record that the image matches the current GS upload generation,
        so an upload over the same page makes subsequent sampling fall back
@@ -1970,7 +1991,7 @@ static void Psp_NativeEmitTriangle(PspStageFastBatch *b, int ctx,
             if (tri[i].z < sDiagZMin) sDiagZMin = tri[i].z;
             if (tri[i].z > sDiagZMax) sDiagZMax = tri[i].z;
         }
-        if (sSt.target == sVram + WORK_OFF) {
+        if (psp_is_work(sSt.target)) {
             ++sDiagZTriWork; ++sDiagDrawWork; ++sFrameWorkDraws;
             ++sPairedWorkDraws;
         } else {
@@ -2175,7 +2196,10 @@ void GsGpu_FrameEnd(void) {
             if (sTargets[i].used && sTargets[i].rendered &&
                 !PspTarget_KeepAfterScreenClear(sTargets[i].rendered,
                                                  sTargets[i].color,
-                                                 sVram + WORK_OFF)) {
+                                                 sVram + WORK_OFF) &&
+                !PspTarget_KeepAfterScreenClear(sTargets[i].rendered,
+                                                 sTargets[i].color,
+                                                 sVram + WORK2_OFF)) {
                 sTargets[i].rendered = 0;
                 ++sTargetScreenCleared;
             }
@@ -2213,6 +2237,7 @@ int Psp_GuInit(void) {
     memset(sVram + FB0_OFF, 0, FB_SIZE);
     memset(sVram + FB1_OFF, 0, FB_SIZE);
     memset(sVram + WORK_OFF, 0, WORK_SIZE);
+    memset(sVram + WORK2_OFF, 0, WORK2_SIZE);
     Psp_Log("psp: startup VRAM clean: both screen buffers and work target cleared (one-time)\n");
     Psp_Log("psp: GS depth Z24->Z16 direct conversion active [depth-z16-20261026]\n");
     Psp_Log("psp: guarded texture reuse [texepoch-20261026] enabled\n");
@@ -2538,5 +2563,9 @@ void Psp_GuStats(unsigned out[4]) {
     Psp_Log("psp: TARGET freshness=%d invalid-rebind=%u invalid-screen-clear=%u per interval\n",
             gPspTargetFreshness, sTargetRebindInvalid, sTargetScreenCleared);
     sTargetRebindInvalid = sTargetScreenCleared = 0;
+    Psp_Log("psp: GS physical WORK pair: 336-slot=0 368-slot=1 samples=%u owner-conflicts=%u owners=%u/%u texture-vram=%uKB\n",
+            sWorkPairSamples, sWorkPairOwnerMisses,
+            sWorkOwnerFbp[0], sWorkOwnerFbp[1], (unsigned)(TEX_SIZE/1024u));
+    sWorkPairSamples=sWorkPairOwnerMisses=0;
     Psp_DiagAllReport(); /* one bounded report for this two-second interval */
 }
