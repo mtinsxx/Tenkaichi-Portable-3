@@ -9,8 +9,15 @@ sound, and controls written for the handheld. It is not an emulator.
 This repository contains **no game data**. The game's files are copied from your own disc of the USA release to
 the memory stick, see [Game files](#game-files).
 
-This is an unofficial port. It is not affiliated with the Tenkaichi3Decomp project; please report problems with
-the PSP version here, not upstream.
+This is an unofficial port, not affiliated with the Tenkaichi3Decomp project. This PSP
+adaptation is under active, experimental development and **is not accepting public bug reports,
+support requests or feature suggestions at this stage**. Please do not contact upstream
+maintainers about problems specific to this PSP port.
+
+> **Experimental development — read-only public preview.** The maintainer is not accepting
+> outside Issues, public discussions or unsolicited contributions while the PSP build is being
+> stabilized. Gameplay, controls and compatibility are not yet guaranteed. This notice does
+> not change the project's licenses or the attribution owed to its upstream authors.
 
 ## PSP-only focus and upstream attribution
 
