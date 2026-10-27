@@ -1567,7 +1567,10 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
                  PspWork_OwnerAllowsSample(
                       sWorkOwnerFbp[psp_work_slot(old->color)],old->fbp))) {
                 if (psp_is_work(old->color)) ++sWorkPairSamples;
-                targetReady = 1;
+                /* Only mark this alias ready AFTER the correctly sized
+                   snapshot has been produced. A failed allocation or
+                   deferred copy must never bind NULL/stale snapshot
+                   memory as a texture. */
                 /* A completed native 5551 image can be sampled from a
                    padded main-RAM GE texture. Needed for full 272px
                    height; source PSP work images are only 512x272 and
