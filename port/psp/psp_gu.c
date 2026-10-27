@@ -49,6 +49,8 @@
 #include "psp_gs_depth_z.h"
 #include "psp_gs_scissor.h"
 #include "psp_gs_static_skip.h"
+#include "psp_gu_scissor.h"
+#include "psp_gs_frame_mask.h"
 #include "psp_tex_reuse.h"
 #include "psp_tex_lru.h"
 #include "psp_t8_native.h"
@@ -187,6 +189,7 @@ static PspDiagAll sPspLogAll;
 static unsigned sDraws, sSkipped, sNewTex, sBatches;
 static unsigned sGsEmptyClipRejects, sGsPrimitiveClipRejects;
 static unsigned sGsNativeStaticSkips;
+static unsigned sGsFbMaskDraws,sGsFbMaskPartial,sGsFbMaskAlphaOnly;
 static unsigned sLastDrawStaticSkip;
 /* PSP-native stage (VU1 program 4), without replacing the game/GS logic. */
 static PspStage4Vertex sStage4Prepared[1024];
@@ -1182,24 +1185,16 @@ static void state_apply(void) {
 
     if (first || sSt.scx != p->scx || sSt.scy != p->scy ||
         sSt.scw != p->scw || sSt.sch != p->sch) {
-        int x0 = (int)((float)sSt.scx * (float)SCR_W / 512.0f);
-        int y0 = (int)((float)sSt.scy * (float)SCR_H / 448.0f);
-        int x1 = (int)((float)(sSt.scx + sSt.scw) * (float)SCR_W / 512.0f + 0.999f);
-        int y1 = (int)((float)(sSt.scy + sSt.sch) * (float)SCR_H / 448.0f + 0.999f);
-        if (x0 < 0) x0 = 0;
-        if (y0 < 0) y0 = 0;
-        if (x1 > SCR_W) x1 = SCR_W;
-        if (y1 > SCR_H) y1 = SCR_H;
-        if (x1 > x0 && y1 > y0) {
-            sceGuScissor(x0, y0, x1, y1);
-            sceGuEnable(GU_SCISSOR_TEST);
+        PspGuClip c=PspGu_FromGs(sSt.scx,sSt.scy,sSt.scw,sSt.sch);
+        if(c.w && c.h) {
+            /* PSPSDK expects WIDTH/HEIGHT, not right/bottom coordinates. */
+            sceGuScissor(c.x,c.y,c.w,c.h);
         } else {
-            /* Never disable clipping when the GS scissor has zero
-               intersection with the PSP display! An empty region must
-               remain empty, not turn into full-screen rendering. */
-            sceGuScissor(0, 0, 0, 0);
-            sceGuEnable(GU_SCISSOR_TEST);
+            /* Draw() rejects empty GS scissor before state_apply().
+               Keep this GU command legal even with GU_DEBUG enabled. */
+            sceGuScissor(0,0,1,1);
         }
+        sceGuEnable(GU_SCISSOR_TEST);
     }
 
     if (sSt.tex != NULL) {
@@ -1760,7 +1755,18 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
                ? (int)alpha_scale((unsigned)((test >> 4) & 0xFF))
                : (int)((test >> 4) & 0xFF);
         n.amask = gPspAlphaFix ? 0xFF : 0;
-        n.pixelMask = 0u;
+        /* GS FRAME.FBMSK applies to ALL draw types, not just battle HUD.
+           Missing masks allowed alpha-only and masked RGB passes to
+           overwrite colors in arenas, fighters and gauge layers.
+           The HUD stencil translation below retains its exact mask. */
+        n.pixelMask=PspGs_FrameMaskToGu(frame);
+        if(n.pixelMask) {
+            ++sGsFbMaskDraws;
+            if(PspGs_FrameMaskPartial((uint32_t)(frame>>32)))
+                ++sGsFbMaskPartial;
+            if((frame>>32 & 0x00FFFFFFu)==0x00FFFFFFu)
+                ++sGsFbMaskAlphaOnly;
+        }
         n.stencilMode = hudMaskMode;
         if (Psp_GsHudMaskWritesStencil(hudMaskMode)) {
             /* PS2 FRAME.FBMSK 0x00FFFFFF masks all RGB writes but leaves
@@ -2653,6 +2659,9 @@ void Psp_GuStats(unsigned out[4]) {
     sGsEmptyClipRejects=sGsPrimitiveClipRejects=0;
     Psp_Log("psp: GS native VU repeated static-format draw skips saved=%u\n",sGsNativeStaticSkips);
     sGsNativeStaticSkips=0;
+    Psp_Log("psp: GS->GU framebuffer masks: masked-draws=%u partial-RGB=%u RGB-protected-alpha-only=%u\n",
+            sGsFbMaskDraws,sGsFbMaskPartial,sGsFbMaskAlphaOnly);
+    sGsFbMaskDraws=sGsFbMaskPartial=sGsFbMaskAlphaOnly=0;
     Psp_Log("psp: GS menu passes: screen=%u work=%u skipped_fb16=%u skipped_depth=%u skipped_special_texture=%u missing_texture=%u no_target=%u\n",
             sDiagDrawMain, sDiagDrawWork, sDiagSkip16, sDiagSkipDepth,
             sDiagSkipPsm, sDiagSkipTexMem, sDiagSkipNoTarget);

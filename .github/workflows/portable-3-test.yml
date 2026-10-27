@@ -161,6 +161,13 @@ jobs:
             port/psp/test_gs_static_skip.c -o /tmp/tp3-gs-static-skip
           /tmp/tp3-gs-static-skip
 
+      - name: Test PS2 GS framebuffer masks and GU scissor units
+        run: |
+          set -euo pipefail
+          gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/psp \
+            port/psp/test_gs_to_gu_state.c -o /tmp/tp3-gs-gu
+          /tmp/tp3-gs-gu
+
       - name: Compile PSP EBOOT using official pspdev SDK
         run: |
           set -euo pipefail
