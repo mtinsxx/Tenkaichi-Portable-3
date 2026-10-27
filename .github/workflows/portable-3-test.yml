@@ -139,7 +139,9 @@ jobs:
           set -euo pipefail
           mkdir -p dist/PSP/GAME/BT3
           cp port/build/psp_rel/EBOOT.PBP dist/PSP/GAME/BT3/EBOOT.PBP
-          printf 'controls=portable\n' > dist/PSP/GAME/BT3/bt3.txt
+          # This diagnostic test artifact is opt-in by download; leave the
+          # normal EBOOT embedded renderer defaults unchanged.
+          printf 'controls=portable\nlog_all=1\nreport=1\nlog_flush=0\ngs_depth=2\n' > dist/PSP/GAME/BT3/bt3.txt
           cat > dist/LEIA-ME.txt <<'EOF'
           TENKAICHI PORTABLE 3 - BUILD EXPERIMENTAL PARA TESTES
 
@@ -154,7 +156,13 @@ jobs:
              copia USA SLUS-21678 em PSP/GAME/BT3/disc/, conforme o README.
           5. Um build bem-sucedido nao confirma que a jogabilidade,
              os graficos nem o desempenho funcionam corretamente.
-          6. Consulte PSP/GAME/BT3/log.txt depois de testar.
+          6. LOG_ALL diagnostico ATIVADO neste pacote de teste: abra
+             PSP/GAME/BT3/log.txt depois de 10-20 segundos em batalha.
+             Envie o arquivo completo para localizar falhas GS/VU1/FB.
+             Nao use o FPS com log_all=1 como benchmark de desempenho.
+             Para jogo normal: edite bt3.txt e coloque log_all=0.
+             Mantenha gs_depth=2 para evitar deformar os personagens.
+          7. Antes de extrair, preserve seu bt3.txt antigo se o editou.
           EOF
 
       - name: Upload EBOOT test package
