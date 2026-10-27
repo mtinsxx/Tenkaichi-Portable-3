@@ -1457,7 +1457,8 @@ static void flush(void) {
        Preserve fragment order within each batched primitive group.
        HUD stencil operations own the alpha bit and keep their existing
        translation; those unusual AFAIL cases retain the legacy path. */
-    if (sSt.atest && PspGs_AfailNeedsReplay(1u,(unsigned)sSt.gsAfail)) {
+    if (sSt.atest && sSt.gsAtst!=1 &&
+        PspGs_AfailNeedsReplay(1u,(unsigned)sSt.gsAfail)) {
         __typeof__(sSt) original=sSt;
         sSt.afunc=gs_atst_to_gu(PspGs_InverseAtst((unsigned)sSt.gsAtst));
         sSt.pixelMask|=PspGs_AfailPassMask((unsigned)original.gsAfail);
