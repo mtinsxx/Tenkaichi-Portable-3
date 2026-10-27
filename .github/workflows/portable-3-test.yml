@@ -72,6 +72,13 @@ jobs:
           /tmp/tp3-tex-pages
           python3 port/psp/test_arch_safety.py
 
+      - name: Test VU1 stage399 cached clip/project and fallback bounds
+        run: |
+          set -euo pipefail
+          gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/psp \
+            port/psp/test_stage_clip_cache.c -lm -o /tmp/tp3-stage-fans
+          /tmp/tp3-stage-fans
+
       - name: Compile PSP EBOOT using official pspdev SDK
         run: |
           set -euo pipefail

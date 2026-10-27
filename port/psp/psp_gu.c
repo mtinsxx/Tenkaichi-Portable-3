@@ -36,6 +36,7 @@
 #include "texture_lod.h"
 #include "psp_stage4.h"
 #include "psp_stage4_clip.h"
+#include "psp_stage_clip_cache.h"
 #include "psp_gu_swap_check.h"
 #include "psp_scene_pair.h"
 #include "psp_hud_overlay.h"
@@ -166,6 +167,8 @@ static PspStage4Vertex sStage4Prepared[1024];
 static PspStageClipVertex sStage4ClipSource[1024];
 static unsigned sStage4ClipFlag[1024];
 static uint32_t sStage4PreparedCount;
+static PspStageClipCache sStage4ClipCache;
+static unsigned sNativeStageCachedClipTriangles;
 static unsigned sNativeStageClipTriangles, sNativeStageClipOutside, sNativeStageClipFailed;
 static unsigned sNativeStageBatches, sNativeStageVerts, sNativeStageFallback;
 /* Native program-4 triangle GS batching: the original GsGpu_Draw
@@ -1769,6 +1772,7 @@ static int Psp_Stage4PrepareDirect(int ctx, const float *vertices,
     uint32_t i;
     float ox, oy;
     sStage4PreparedCount = 0;
+    PspStageClipCache_Reset(&sStage4ClipCache);
     ++sFrameStageInputs;
     if (!gPspNativeStage4 || count < 3 || count > 1024 ||
         !sReady || ctx < 0 || ctx > 1 || !vertices || !consts) return 0;
@@ -1808,25 +1812,15 @@ static int Psp_Stage4PrepareDirect(int ctx, const float *vertices,
         unsigned idx2 = i + 2u;
         if (sStage4ClipFlag[idx0] || sStage4ClipFlag[idx1] ||
             sStage4ClipFlag[idx2]) {
-            PspStageClipVertex input[3], poly[PSP_STAGE_CLIP_MAX];
-            int n, j;
+            PspStageClipVertex input[3];
             input[0] = sStage4ClipSource[idx0];
             input[1] = sStage4ClipSource[idx1];
             input[2] = sStage4ClipSource[idx2];
-            n = PspStage4_ClipTriangle(poly, input);
-            if (n < 0) {
+            if (!PspStageClipCache_Store(&sStage4ClipCache, i, input,
+                                         consts + 32, ox, oy)) {
                 ++sNativeStageFallback;
                 ++sNativeStageClipFailed;
                 return 0;
-            }
-            for (j = 0; j < n; ++j) {
-                PspStage4Vertex probe;
-                if (!PspStage4_ClipProject(&probe, &poly[j],
-                                           consts + 32, ox, oy)) {
-                    ++sNativeStageFallback;
-                    ++sNativeStageClipFailed;
-                    return 0;
-                }
             }
         }
     }
@@ -1957,26 +1951,14 @@ void GsGpu_DrawVu4(int ctx, const float *vertices, uint32_t count,
         uint32_t j;
         if (sStage4ClipFlag[idx[0]] || sStage4ClipFlag[idx[1]] ||
             sStage4ClipFlag[idx[2]]) {
-            PspStageClipVertex input[3], poly[PSP_STAGE_CLIP_MAX];
-            PspStage4Vertex output[PSP_STAGE_CLIP_MAX];
-            float ox = (float)(gGs.xyoffset[ctx] & 0xFFFFu) / 16.0f;
-            float oy = (float)((gGs.xyoffset[ctx] >> 32) & 0xFFFFu) / 16.0f;
-            int n, k;
-            for (j = 0; j < 3; ++j) input[j] = sStage4ClipSource[idx[j]];
-            n = PspStage4_ClipTriangle(poly, input);
+            const PspStage4Vertex *output =
+                &sStage4ClipCache.projected[sStage4ClipCache.begin[i]];
+            int n = sStage4ClipCache.length[i], k;
             if (n == 0) {
                 ++sNativeStageClipOutside;
                 continue;
             }
-            /* All output vertices were preflighted by Prepare. */
-            if (n < 0) continue;
-            for (k = 0; k < n; ++k) {
-                if (!PspStage4_ClipProject(&output[k], &poly[k],
-                                            consts + 32, ox, oy)) {
-                    n = 0; /* never submit an invalid partial polygon */
-                    break;
-                }
-            }
+            ++sNativeStageCachedClipTriangles;
             for (k = 1; k + 1 < n; ++k) {
                 unsigned ids[3] = {0u, (unsigned)k, (unsigned)(k + 1)};
                 for (j = 0; j < 3; ++j) {
@@ -2286,9 +2268,10 @@ void Psp_GuStats(unsigned out[4]) {
     Psp_Log("psp: stage full-frustum trivial reject: strips=%u vertices=%u enabled=%d (no GS pixels, no VU1 interpreter)\n",
             sNativeStageCulledStrips, sNativeStageCulledVerts, gPspNativeStageCull);
     sNativeStageCulledStrips = sNativeStageCulledVerts = 0;
-    Psp_Log("psp: stage native CPU clipping: triangles=%u wholly-outside=%u preflight-rejected=%u enabled=%d\n",
+    Psp_Log("psp: stage native CPU clipping: triangles=%u wholly-outside=%u preflight-rejected=%u enabled=%d cached-fans=%u\n",
             sNativeStageClipTriangles, sNativeStageClipOutside, sNativeStageClipFailed,
-            gPspNativeStageClip);
+            gPspNativeStageClip, sNativeStageCachedClipTriangles);
+    sNativeStageCachedClipTriangles = 0;
     sNativeStageClipTriangles = sNativeStageClipOutside = sNativeStageClipFailed = 0;
     Psp_Log("psp: architecture gaps: unimplemented-fb-readbacks=%u native-effects=%u (no pixels copied for FB readback)\n",
             sDiagUnimplementedFbUpload, sDiagUnimplementedNativeEffect);

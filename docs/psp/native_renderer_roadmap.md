@@ -60,3 +60,7 @@ Goal: keep BT3's fighter meshes, animation, gameplay and anime outline while red
 ### Phase 1: physical display FBP aliasing (October 27)
 
 The current PS2 GS display FBP and its paired previous FBP are distinct surfaces. The PSP mapping accidentally put both on the *active* draw buffer, causing sampling to fail the self-alias guard and fall back to possibly stale emulated GS memory (no GPU readback). Use the *other* PSP physical display buffer for the paired FBP. Keep all auxiliary FBPs mapped to WORK. `scene_pair_separate=0` rolls this mapping back for A/B visual tests. Separate logical WORK owners now force a GU batch boundary. Routing tests and PSP compilation do **not** verify the black stage has been fixed at runtime.
+
+### Phase 2 — cache VU1 program399 accepted clipped fans (October 27)
+
+The native CPU stage path previously performed polygon clipping/projection twice per clipped triangle: preflight, then submission. It now retains the **exact** projected vertices in a fixed 4096-vertex bounded scratch cache and reuses them for GE submission, without re-clipping. Any failure or overflow rejects the entire native strip before changing GS registers, preserving the VU1 interpreter fallback, vertex order, coordinates, colour, and depth. A host parity test checks matching vertex bytes and conservative overflow; runtime FPS improvement is unmeasured, and the bulk of program399 interpreter fallbacks remain for future adaptation.
