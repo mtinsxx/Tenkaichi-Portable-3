@@ -1647,8 +1647,8 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
                These multipliers convert PS2 texel units to real PSP
                backing texels, rather than expanding coordinates by
                TEX0.TW / PSP_SCREEN which caused missing image edges. */
-            us = 480.f/512.f;
-            vs = 272.f/448.f;
+            us = PspGsFb_PhysicalU(1.f);
+            vs = PspGsFb_PhysicalV(1.f);
         }
     }
     targetIndex = target_get((uint32_t)fbp, 1);
@@ -1993,8 +1993,18 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
             vv = (float)s->v / 16.0f * lodV;
         } else {
             float q = s->q != 0.0f ? s->q : 1.0f;
-            u = (s->s / q) * (float)(tw ? tw : 1);
-            vv = (s->t / q) * (float)(th ? th : 1);
+            /* Framebuffer-as-texture STQ has logical GS dimensions
+               encoded in TEX0, NOT the 512x512 POT size used for the
+               PSP main-RAM staging texture. Using th=512 unconditionally
+               stretched textures whose original GS TEX0.TH=256, etc. */
+            unsigned logicalW=texIsTarget ?
+                (1u << ((t0 >> 26) & 15u)):(unsigned)(tw?tw:1);
+            unsigned logicalH=texIsTarget ?
+                (1u << ((t0 >> 30) & 15u)):(unsigned)(th?th:1);
+            if(logicalW>1024u)logicalW=1024u;
+            if(logicalH>1024u)logicalH=1024u;
+            u=(s->s/q)*(float)logicalW;
+            vv=(s->t/q)*(float)logicalH;
         }
         d[i].u = u * us;
         d[i].v = vv * vs;

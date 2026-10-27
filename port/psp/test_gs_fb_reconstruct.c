@@ -9,6 +9,11 @@ int main(void) {
     assert(near(PspGsFb_PhysicalU(512.f),480.f));
     assert(near(PspGsFb_PhysicalV(448.f),272.f));
     assert(near(PspGsFb_PhysicalV(224.f),136.f));
+    /* STQ samples the logical PS2 TEX0 dimensions, not the 512x512
+       padded PSP GE transfer dimensions. */
+    assert(near(PspGsFb_PhysicalU(0.5f*256.f),120.f));
+    assert(near(PspGsFb_PhysicalV(0.5f*256.f),77.714286f));
+    assert(near(PspGsFb_PhysicalV(1.f*512.f),310.85714f));
     assert(!PspGsFb_SampleValid(&v,1u));
     PspGsFb_OnDraw(&v);
     assert(PspGsFb_CanSave(&v,1u));
