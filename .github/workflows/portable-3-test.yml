@@ -168,6 +168,11 @@ jobs:
             port/psp/test_gs_to_gu_state.c -o /tmp/tp3-gs-gu
           /tmp/tp3-gs-gu
 
+      - name: Check PSP VU1 native debug-switch optimization
+        run: |
+          set -euo pipefail
+          python3 port/psp/test_vu_env.py
+
       - name: Compile PSP EBOOT using official pspdev SDK
         run: |
           set -euo pipefail

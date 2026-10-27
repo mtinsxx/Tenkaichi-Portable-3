@@ -33,6 +33,13 @@
 #ifdef PORT_PSP
 #include "psp_vif_subword.h"
 #include "psp_vu_profile.h"
+/* PSP release/debug EBOOTs have NO external environment variable
+ * configuration (bt3.txt was removed). VU1 dispatch runs thousands
+ * of times per battle and previously called getenv repeatedly to
+ * check desktop-only BT3_VU_* flags. Resolve them at compile time,
+ * leaving native interpreter/HLE fallbacks and PSP LOG_ALL intact.
+ * Desktop and Vita keep their runtime diagnostic environment switches. */
+#define TP3_VU_ENV(name) ((const char *)0)
 /* A validated native program-4 path is independent of the existing
    global BT3_VU_INTERP=1, which remains set for all other programs. */
 extern int gPspNativeStage4;
@@ -1065,9 +1072,11 @@ __attribute__((hot)) static int hle_program6(void) {
 }
 
 #ifdef PORT_VITA /* the switches asked for at every call (20,000 a frame), answered without a call */
-#undef getenv
 extern int gVglVuReady;
-#define getenv(n) ((n)[7] == 'I' ? (gVglVuReady ? (char *)0 : (char *)"1") : (char *)0)
+#define TP3_VU_ENV(n) ((n)[7] == 'I' ? (gVglVuReady ? (char *)0 : (char *)"1") : (char *)0)
+#endif
+#ifndef TP3_VU_ENV
+#define TP3_VU_ENV(n) getenv(n)
 #endif
 /* MSCAL / MSCALF (addr = instruction address) or MSCNT (addr < 0: continue where the last run stopped). */
 __attribute__((hot)) void GsVu1_Call(int addr) {
@@ -1089,7 +1098,7 @@ __attribute__((hot)) void GsVu1_Call(int addr) {
         }
     }
 #endif
-    if (getenv("BT3_VU_DUMP") != NULL && (int)gGsFrame == atoi(getenv("BT3_VU_DUMP")) && sProgSize == 127) {
+    if (TP3_VU_ENV("BT3_VU_DUMP") != NULL && (int)gGsFrame == atoi(TP3_VU_ENV("BT3_VU_DUMP")) && sProgSize == 127) {
         static int shown;
         if (shown < 3 && addr < 0) {
             uint32_t q, w[4];
@@ -1106,7 +1115,7 @@ __attribute__((hot)) void GsVu1_Call(int addr) {
             }
         }
     }
-    if (getenv("BT3_VU_CALLS") != NULL) { /* which entry addresses each program is called with (-1 = MSCNT) */
+    if (TP3_VU_ENV("BT3_VU_CALLS") != NULL) { /* which entry addresses each program is called with (-1 = MSCNT) */
         static struct { unsigned size; int addr; unsigned n; } seen[64];
         static unsigned total;
         int k;
@@ -1123,9 +1132,9 @@ __attribute__((hot)) void GsVu1_Call(int addr) {
     }
     if (sProgSize == 399 && GsGpu_Enabled() &&
 #ifdef PORT_PSP
-        (gPspNativeStage4 || getenv("BT3_VU_INTERP") == NULL)
+        (gPspNativeStage4 || TP3_VU_ENV("BT3_VU_INTERP") == NULL)
 #else
-        getenv("BT3_VU_INTERP") == NULL
+        TP3_VU_ENV("BT3_VU_INTERP") == NULL
 #endif
     ) {
         if (addr >= 0) {          /* MSCALF 0: constants only */
@@ -1145,7 +1154,7 @@ __attribute__((hot)) void GsVu1_Call(int addr) {
         run(0);
         vu.pc = 21;
     }
-    if (sProgSize == 451 && GsGpu_Enabled() && getenv("BT3_VU_INTERP") == NULL) {
+    if (sProgSize == 451 && GsGpu_Enabled() && TP3_VU_ENV("BT3_VU_INTERP") == NULL) {
         if (addr >= 0) {          /* MSCALF 0: constants to registers only */
             sP6Batches = 0;
             sHle++;
@@ -1159,7 +1168,7 @@ __attribute__((hot)) void GsVu1_Call(int addr) {
         sHle++;
         return;
     }
-    if ((sProgSize == 94 || sProgSize == 104) && GsGpu_Enabled() && getenv("BT3_VU_INTERP") == NULL) {
+    if ((sProgSize == 94 || sProgSize == 104) && GsGpu_Enabled() && TP3_VU_ENV("BT3_VU_INTERP") == NULL) {
         /* MSCALF 0 only loads registers; every MSCNT is one batch */
         if (addr >= 0 || hle_program78(sProgSize == 94 ? 3 : 4)) {
             sHle++;
@@ -1168,7 +1177,7 @@ __attribute__((hot)) void GsVu1_Call(int addr) {
         run(0); /* a batch the shader path cannot take: give the interpreter the registers the setup loads */
         vu.pc = sProgSize == 94 ? 15 : 52;
     }
-    if ((sProgSize == 99 || sProgSize == 101) && GsGpu_Enabled() && getenv("BT3_VU_INTERP") == NULL) {
+    if ((sProgSize == 99 || sProgSize == 101) && GsGpu_Enabled() && TP3_VU_ENV("BT3_VU_INTERP") == NULL) {
         /* MSCALF 0 only loads registers; every MSCNT is one batch */
         if (addr >= 0 || hle_program2()) {
             sHle++;
@@ -1179,9 +1188,9 @@ __attribute__((hot)) void GsVu1_Call(int addr) {
     }
     if (sProgSize == 124 && GsGpu_Enabled() &&
 #ifdef PORT_PSP
-        (gPspNativeFighter || getenv("BT3_VU_INTERP") == NULL)
+        (gPspNativeFighter || TP3_VU_ENV("BT3_VU_INTERP") == NULL)
 #else
-        getenv("BT3_VU_INTERP") == NULL
+        TP3_VU_ENV("BT3_VU_INTERP") == NULL
 #endif
     ) {
         /* Only the accepted normal-skinned fade layer uses native MIPS. */
@@ -1196,9 +1205,9 @@ __attribute__((hot)) void GsVu1_Call(int addr) {
     }
     if (sProgSize == 127 && GsGpu_Enabled() &&
 #ifdef PORT_PSP
-        (gPspNativeFighter || getenv("BT3_VU_INTERP") == NULL)
+        (gPspNativeFighter || TP3_VU_ENV("BT3_VU_INTERP") == NULL)
 #else
-        getenv("BT3_VU_INTERP") == NULL
+        TP3_VU_ENV("BT3_VU_INTERP") == NULL
 #endif
     ) {
         if (addr >= 0 || hle_program0()) {
@@ -1221,7 +1230,7 @@ void GsVu1_FrameEnd(void) {
 #endif
     int k, i;
 
-    if (getenv("BT3_GS_VERBOSE") != NULL && (gGsFrame < 4 || gGsFrame % 60 == 0)) {
+    if (TP3_VU_ENV("BT3_GS_VERBOSE") != NULL && (gGsFrame < 4 || gGsFrame % 60 == 0)) {
         fprintf(stderr, "vu1: frame %u: %u interpreted runs, %u instructions, %u kicks; %u calls served by shaders\n", gGsFrame, sStatRuns, sStatInstr, sStatKicks, sHle);
         for (k = 0; k < 16 && sProg[k].size != 0; k++) {
             fprintf(stderr, "vu1:   program of %u instructions: %u runs, %u instructions (%u%%), %u kicks\n", sProg[k].size, sProg[k].runs,
