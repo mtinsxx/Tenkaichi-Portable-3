@@ -17,9 +17,27 @@
 static inline uint32_t PspGs_FrameMaskToGu(uint64_t frame) {
     uint32_t m=(uint32_t)(frame>>32);
     unsigned psm=(unsigned)((frame>>24)&63u);
-    uint32_t out=m & UINT32_C(0x80F8F8F8);
-    if(psm==1u) out|=UINT32_C(0xFF000000);
-    return out;
+    /* GS pixel() packs the 32-bit FRAME.FBMSK into 5551 first:
+       R bits 3..7, G bits 11..15, B bits 19..23 and alpha bit 31.
+       Reconstruct the GU per-channel mask using those exact packed
+       bits, not the unconverted 32-bit FRAME mask. */
+    if(psm==2u || psm==10u) {
+        uint32_t m16=((m>>3)&0x001Fu) |
+                     ((m>>6)&0x03E0u) |
+                     ((m>>9)&0x7C00u) |
+                     ((m>>16)&0x8000u);
+        return ((m16&0x1Fu)<<3) |
+               (((m16>>5)&0x1Fu)<<11) |
+               (((m16>>10)&0x1Fu)<<19) |
+               ((m16&0x8000u)?UINT32_C(0x80000000):0u);
+    }
+    /* 24-bit GS colour does not write destination alpha; keep the
+       established PSP alpha/stencil guard and 32-bit projection. */
+    {
+        uint32_t out=m & UINT32_C(0x80F8F8F8);
+        if(psm==1u) out|=UINT32_C(0xFF000000);
+        return out;
+    }
 }
 static inline int PspGs_FrameMaskPartial(uint32_t m) {
     return (m & UINT32_C(0x00FFFFFF)) != 0 &&
