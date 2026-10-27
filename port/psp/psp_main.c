@@ -135,6 +135,11 @@ int gPspNativeFighter = 1;
    GS VRAM readback). Separate experimental EBOOT from PR #16. */
 int gPspGsFb16 = 1;
 static FILE *sLog;
+/* PSP's newlib FILE buffer is written by the game, sound and renderer
+   threads. Serialize their writes and flushes: the 2026-10-27 battle
+   trace contained a 415098-byte NUL hole between buffered reports.
+   This is a hardening precaution, not proof of why the hole occurred. */
+static SceUID sLogLock = -1;
 static volatile int sEnded;
 extern unsigned gPortVBlanks;
 extern int gPspReport; /* port/psp/psp_gfx.c */
@@ -156,23 +161,31 @@ int sLogFlush = 0;
 /* Bounded full renderer diagnostics: permanently embedded in this diagnostic EBOOT. */
 int gPspLogAll = 1;
 
+static int Psp_LogAcquire(void) {
+    return sLogLock >= 0 ? sceKernelWaitSema(sLogLock, 1, NULL) >= 0 : 0;
+}
+static void Psp_LogRelease(int acquired) {
+    if (acquired) sceKernelSignalSema(sLogLock, 1);
+}
 void Psp_Log(const char *fmt, ...) {
     char msg[1024];
     va_list ap;
-
+    int held;
     va_start(ap, fmt);
     vsnprintf(msg, sizeof(msg), fmt, ap);
     va_end(ap);
+    held = Psp_LogAcquire();
     if (sLog != NULL) {
         fputs(msg, sLog);
-        if (sLogFlush) {
-            fflush(sLog);
-        }
+        if (sLogFlush) fflush(sLog);
     }
+    Psp_LogRelease(held);
 }
 
 void Psp_LogFlush(void) {
+    int held = Psp_LogAcquire();
     if (sLog != NULL) fflush(sLog);
+    Psp_LogRelease(held);
 }
 
 /* The renderer's front end, adx.c and eft_c.c log through Vita_Log (the name the Vita port gave it). The PSP
@@ -215,10 +228,16 @@ static void text_screen(void) {
 }
 
 static void quit(void) {
+    int held = Psp_LogAcquire();
     if (sLog != NULL) {
         fflush(sLog);
         fclose(sLog);
         sLog = NULL;
+    }
+    Psp_LogRelease(held);
+    if (sLogLock >= 0) {
+        sceKernelDeleteSema(sLogLock);
+        sLogLock = -1;
     }
     fflush(stdout);
     fflush(stderr);
@@ -343,10 +362,13 @@ int __wrap_main(int argc, char **argv) {
     sceCtrlSetSamplingMode(PSP_CTRL_MODE_ANALOG);
     pspDebugScreenInit();
     sceIoMkdir(HOME, 0777);
+    sLogLock = sceKernelCreateSema("tp3_log_mutex", 0, 1, 1, NULL);
     sLog = fopen(HOME "/log.txt", "w");
     Psp_Log("======== new run ========\n");
     Psp_Log("psp: Dragon Ball Z BT3 (Tenkaichi3Decomp) for the PSP, built " __DATE__ " " __TIME__ "\n");
-    Psp_Log("psp: BUILD-ID TP3-NATIVE-LOGALL-20261027\n");
+    Psp_Log("psp: BUILD-ID TP3-GE-PIXELS-LOGGUARD-20261027\n");
+    Psp_Log("psp: multi-thread LOG_ALL mutex=%s (no config file)\n",
+            sLogLock >= 0 ? "on" : "unavailable");
 
     setenv("BT3_DATA", HOME, 1);
     setenv("BT3_SAVES", HOME "/saves", 1);

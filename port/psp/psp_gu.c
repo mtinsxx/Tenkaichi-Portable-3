@@ -276,6 +276,9 @@ static unsigned sFrameStageInputs, sFrameFighterInputs;
 static unsigned sFrameScreenDraws, sFrameWorkDraws, sFrameWorkOwners;
 static unsigned sFrameDiagShown, sFrameLastDiag;
 static unsigned sPixelProbeShown, sPixelProbeLastFrame;
+static unsigned sPixelProbeFrame, sPixelProbeSampleCount;
+static PspGpuPixelProbe sPixelProbeScreen, sPixelProbeWork0, sPixelProbeWork1;
+static unsigned sPixelProbeScene, sPixelProbeFighter;
 static unsigned sTargetsRegistered;
 /* Each physical PSP WORK surface has its own logical GS owner.
    GS 336 lives in WORK0, GS 368 in WORK1; other scratch targets
@@ -2159,6 +2162,14 @@ void GsGpu_FrameEnd(void) {
         PspGpuPixelProbe a=PspGpuProbe5551(screen,BUF_W,SCR_W,SCR_H);
         PspGpuPixelProbe b=PspGpuProbe5551(w0,BUF_W,SCR_W,SCR_H);
         PspGpuPixelProbe c=PspGpuProbe5551(w1,BUF_W,SCR_W,SCR_H);
+        /* Keep the last real-pixel sample in a separate summary so it
+           survives as part of the next periodic report, not only the
+           renderer's per-frame logs. No additional GPU/VRAM readback. */
+        sPixelProbeScreen=a; sPixelProbeWork0=b; sPixelProbeWork1=c;
+        sPixelProbeFrame=sFrame;
+        sPixelProbeScene=sFrameStageInputs;
+        sPixelProbeFighter=sFrameFighterInputs;
+        ++sPixelProbeSampleCount;
         Psp_Log("psp: LOG_ALL PIXELS post-GE frame=%u main-fbp=%d screen=%u/%u hash=%08x work0-owner=%u work0=%u/%u hash=%08x work1-owner=%u work1=%u/%u hash=%08x stage-input=%u fighter-input=%u\n",
                 sFrame, gGsMainFbp, a.colored,a.pixels,a.hash,
                 sWorkOwnerFbp[0],b.colored,b.pixels,b.hash,
@@ -2599,5 +2610,14 @@ void Psp_GuStats(unsigned out[4]) {
             sWorkPairSamples, sWorkPairOwnerMisses,
             sWorkOwnerFbp[0], sWorkOwnerFbp[1], (unsigned)(TEX_SIZE/1024u));
     sWorkPairSamples=sWorkPairOwnerMisses=0;
+    if (gPspLogAll) {
+        Psp_Log("psp: LOG_ALL GPU-PROBE last-post-GE frame=%u samples-in-interval=%u screen-rgb=%u/%u hash=%08x work0-rgb=%u/%u hash=%08x work1-rgb=%u/%u hash=%08x stage-input=%u fighter-input=%u\n",
+                sPixelProbeFrame, sPixelProbeSampleCount,
+                sPixelProbeScreen.colored,sPixelProbeScreen.pixels,sPixelProbeScreen.hash,
+                sPixelProbeWork0.colored,sPixelProbeWork0.pixels,sPixelProbeWork0.hash,
+                sPixelProbeWork1.colored,sPixelProbeWork1.pixels,sPixelProbeWork1.hash,
+                sPixelProbeScene,sPixelProbeFighter);
+        sPixelProbeSampleCount=0;
+    }
     Psp_DiagAllReport(); /* one bounded report for this two-second interval */
 }
