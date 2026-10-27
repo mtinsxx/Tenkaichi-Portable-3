@@ -30,9 +30,9 @@ void Psp_VBlankWait(void) {
 
 /*
  * Physical PSP-to-PS2 pad conversion is in psp_controls.h, where it can
- * be unit-tested without the PSP SDK. Legacy is default: opt into the
- * PSP-native fight layout is embedded as the default.
- * controls=legacy in bt3.txt explicitly restores the former mapping.
+ * be unit-tested without the PSP SDK. Portable controls are embedded
+ * as the default for live fights; the menu keeps its original mapping.
+ * Legacy mode remains available only in source for a developer rebuild.
  */
 int gPspControlsProfile = PSP_PROFILE_DEFAULT;
 static PspControlsState sPspControls;
@@ -84,7 +84,7 @@ int Port_PadRead(int socket, unsigned char *data) {
 
 extern unsigned long long Psp_TimeUs(void);
 
-/* ---- the report: every two seconds, how fast the game is running and where its time goes (bt3.txt report=1) ---- */
+/* ---- embedded performance report, every ~2 seconds; no config file ---- */
 extern unsigned gPortVBlanks;
 int gPspReport = 1;
 extern void Psp_Log(const char *fmt, ...);

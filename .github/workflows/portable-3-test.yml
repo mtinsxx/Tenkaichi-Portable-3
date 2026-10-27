@@ -86,6 +86,7 @@ jobs:
             port/psp/test_log_all.c -o /tmp/tp3-log-all
           /tmp/tp3-log-all
           python3 port/psp/test_arch_safety.py
+          python3 port/psp/test_native_diagnostics.py
 
       - name: Compile PSP EBOOT using official pspdev SDK
         run: |
@@ -139,30 +140,24 @@ jobs:
           set -euo pipefail
           mkdir -p dist/PSP/GAME/BT3
           cp port/build/psp_rel/EBOOT.PBP dist/PSP/GAME/BT3/EBOOT.PBP
-          # This diagnostic test artifact is opt-in by download; leave the
-          # normal EBOOT embedded renderer defaults unchanged.
-          printf 'controls=portable\nlog_all=1\nreport=1\nlog_flush=0\ngs_depth=2\n' > dist/PSP/GAME/BT3/bt3.txt
+          # No bt3.txt: EBOOT already includes LOG_ALL, profiler and controls.
           cat > dist/LEIA-ME.txt <<'EOF'
           TENKAICHI PORTABLE 3 - BUILD EXPERIMENTAL PARA TESTES
 
           1. Extraia a pasta PSP/GAME/BT3 no diretorio de memory stick do PPSSPP.
           2. O arquivo EBOOT.PBP e o programa compilado para PSP.
-          3. Neste EBOOT, controls=portable ja vem ativado por padrao,
-             mesmo sem bt3.txt. Para comparar, use controls=legacy.
-          3a. Para confirmar o modo, abra PSP/GAME/BT3/log.txt e procure
-              BUILD-ID TP3-PORTABLE-DEFAULT-20261026 e INPUT profile.
-          4. O programa nao inclui dados do jogo. Para avancar alem da
-             verificacao do disco, forneca os arquivos da sua propria
-             copia USA SLUS-21678 em PSP/GAME/BT3/disc/, conforme o README.
-          5. Um build bem-sucedido nao confirma que a jogabilidade,
-             os graficos nem o desempenho funcionam corretamente.
-          6. LOG_ALL diagnostico ATIVADO neste pacote de teste: abra
-             PSP/GAME/BT3/log.txt depois de 10-20 segundos em batalha.
-             Envie o arquivo completo para localizar falhas GS/VU1/FB.
-             Nao use o FPS com log_all=1 como benchmark de desempenho.
-             Para jogo normal: edite bt3.txt e coloque log_all=0.
-             Mantenha gs_depth=2 para evitar deformar os personagens.
-          7. Antes de extrair, preserve seu bt3.txt antigo se o editou.
+          3. Basta iniciar EBOOT.PBP. LOG_ALL, FPS, comandos portable,
+             e profundidade normal estao compilados no executavel.
+             Nenhum bt3.txt e necessario nem lido.
+          4. Nao inclui dados comerciais do jogo: coloque os seus
+             arquivos USA SLUS-21678 em PSP/GAME/BT3/disc/.
+          5. Teste 10 a 20 segundos de batalha e envie o arquivo
+             PSP/GAME/BT3/log.txt inteiro.
+          6. Esse diagnostico pode reduzir o FPS; nao serve como
+             referencia de desempenho ate o LOG_ALL ser desativado
+             numa build normal de producao.
+          7. saves/ e bt3_settings.txt do jogo sao preservados.
+          8. EBOOT compilado nao significa que os cenarios ja funcionem.
           EOF
 
       - name: Upload EBOOT test package

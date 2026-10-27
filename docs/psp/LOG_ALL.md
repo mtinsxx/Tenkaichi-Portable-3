@@ -1,34 +1,36 @@
-# PSP renderizador — log_all=1 (diagnóstico completo dos caminhos instrumentados)
+# LOG ALL — nativo no EBOOT.PBP
 
-O port ainda não consegue determinar automaticamente a causa de qualquer pixel preto. Este modo registra **todos os eventos observados nas categorias instrumentadas** com contagem e uma amostra inicial por categoria, a cada ~2 segundos. Não substitui uma captura de comandos da GPU nem garante descobrir todos os defeitos.
+**Sem bt3.txt.** O diagnóstico foi incorporado diretamente ao executável
+`TP3-NATIVE-LOGALL-20261027`. O `EBOOT.PBP` registra automaticamente o que
+acontece com o renderizador quando você abre o jogo: `LOG_ALL` e relatórios
+de FPS/GS/VU1/texturas. O teste de profundidade permanece no padrão
+`gs_depth=2`, **não** é uma nova tentativa de corrigir o cenário preto.
+Os controles `portable` também são embutidos.
 
-## Ativação
+## Como usar no PPSSPP Android
 
-No Memory Stick do PPSSPP, edite `PSP/GAME/BT3/bt3.txt`:
+1. Copie o `EBOOT.PBP` para o Memory Stick em `PSP/GAME/BT3/`.
+2. Mantenha os arquivos da sua própria cópia do jogo em `PSP/GAME/BT3/disc/`.
+3. Abra o jogo e reproduza a tela preta por 10–20 segundos.
+4. Saia normalmente e envie o `PSP/GAME/BT3/log.txt` completo.
 
-```ini
-log_all=1
-report=1
-log_flush=0
-gs_depth=2
-```
+O executável **não lê nem inclui `bt3.txt`**. Arquivos de saves e
+`bt3_settings.txt` pertencem ao **jogo**, são diferentes da configuração
+externa eliminada e continuam sendo preservados.
 
-Reinicie o EBOOT e reproduza o defeito por 10–20 segundos. Feche o jogo normalmente para preservar a última descarga do arquivo `PSP/GAME/BT3/log.txt`. Envie esse arquivo, mais uma imagem do cenário preto. `log_all=0` desativa o diagnóstico e evita seu custo durante jogo normal. **Não desative depth nem mude texturas/modelos** neste teste.
+## Capturas disponíveis
 
-## O que aparece no log
+Linhas `psp: LOG_ALL` contêm totais e a primeira ocorrência por
+categoria de falha: validação de VU1/stage399, projeção e recorte;
+triângulos aceitos/enviados; operações GS descartadas; texturas
+não decodificadas; conflito e invalidação de framebuffers;
+composição e efeitos nativos não implementados. Amostras de estado
+incluem FBP, ZBP, TBP, PSM, TEST, PRIM e número do quadro.
+O perfil tradicional também registra FPS real, tempos de GS/VU1,
+decodificação de textura, GE e VBlank.
 
-Linhas começando por `psp: LOG_ALL` incluem:
-- `stage-*`: VU1 program 399 rejeitado (argumentos, CLIP/W invalidado, projeção fora do domínio, clipper sem suporte, memória do fan), fallback ao interpretador, aceito, trivialmente invisível e triângulos enviados;
-- `draw-skipped-*`: GS color framebuffer 16 bits não suportado, coincidência FRAME/ZBUF, PSM especial, falha na decodificação ou no destino;
-- `fb-texture-*`: framebuffer em uso como textura, geração VRAM modificada, ausência de pixels renderizados, autoalias, WORK sobrescrito, outros impedimentos e leitura válida;
-- `fb-work-surface-replaced`: duas imagens lógicas disputaram o mesmo WORK físico;
-- `native-effect-not-implemented` / `framebuffer-upload-not-implemented`: callbacks reais alcançados, mas ainda não implementados.
-
-Cada categoria registra `count`, `first-frame`, `last-frame`, a primeira amostra com `fbp`, `zbp`, `tbp`, `texpsm`, `test`, `prim`, `ctx`, `detail`. `detail` é o índice do vértice/triângulo em falhas de VU1, o ID do efeito ou o buffer envolvido, conforme a categoria. Os registros de FPS real, tempos de renderização, textura, GS, GE/VBlank e VU1 do relatório tradicional permanecem ativos.
-
-## Custos e limites
-
-- Sem uma linha por desenho — contadores em RAM e um único `Psp_LogFlush` ao fim de cada intervalo.
-- O novo modo adiciona trabalho por chamada, especialmente com 30 mil triângulos por quadro; FPS do modo diagnóstico pode ser inferior ao modo normal.
-- Não intercepta pixels depois da rasterização, não faz screenshot da GE e não prova que o framebuffer final está correto.
-- A instrumentação **não altera** cores, z-buffer, sprites, texturas, animações ou os modelos dos lutadores.
+O coletor é **limitado** para evitar escrita por triângulo, mas pode
+reduzir o FPS observado. Ele não vê pixels após rasterização e
+**não detecta automaticamente todos os defeitos possíveis**.
+Para uma versão futura sem a sobrecarga, será necessário recompilar
+ou produzir uma build de produção separada, sem configuração em TXT.
