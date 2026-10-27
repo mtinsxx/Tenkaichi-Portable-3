@@ -69,6 +69,10 @@ static void chord(const char *name, unsigned input, unsigned expected, unsigned 
 
 int main(void) {
     unsigned in;
+    if (PSP_PROFILE_DEFAULT != PSP_PROFILE_PORTABLE) {
+        fprintf(stderr, "FAIL expected embedded portable control default\n");
+        return 1;
+    }
     /* BT3 battle.h: pause=0x100, demo=0x200, ready=0x400,
        loading=0x2000, pause-menu=0x4000. */
     const uint64_t inactive = 0x6700ull;

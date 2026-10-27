@@ -102,8 +102,9 @@ files are the unmodified USA release and tells you if they are not.
 
 ## Controls
 
-The default `legacy` mapping is unchanged. For an **experimental PSP/PPSSPP-friendly layout**, add
-`controls=portable` to `ms0:/PSP/GAME/BT3/bt3.txt` and restart. Only while
+**Tenkaichi Portable 3 builds start with the experimental `portable` controls enabled**,
+even if no `bt3.txt` is present. To restore the older control scheme, add
+`controls=legacy` to `ms0:/PSP/GAME/BT3/bt3.txt` and restart. Only while
 **actively fighting**, the analog stick moves, D-pad UP/DOWN flies up/down, L charges Ki and R
 locks on. L + UP/DOWN retains the original PS2 direction for supers and Ultimate;
 L + R + UP/DOWN allows charged vertical flight.
@@ -119,7 +120,7 @@ non-fight states using the game's battle flags; this is not yet tested end-to-en
 See [full PSP control reference, timings and limitations](docs/psp/CONTROLS_ROADMAP_PTBR.md)
 (in Portuguese). To roll back, remove the setting or set `controls=legacy`.
 
-The **default legacy** control type:
+The **legacy** control type (selectable with `controls=legacy`):
 
 | PSP | Action |
 |---|---|

@@ -1,7 +1,8 @@
 /*
  * PSP frame pacing and controller interface.
  * Input is normalized and mapped by psp_controls.h.
- * Legacy is default; portable fight controls are explicitly opt-in.
+ * Portable fight controls are default in Tenkaichi Portable 3.
+ * Menus, pauses and cutscenes retain the original mappings.
  */
 #include <pspctrl.h>
 #include <pspdisplay.h>
@@ -30,11 +31,16 @@ void Psp_VBlankWait(void) {
 /*
  * Physical PSP-to-PS2 pad conversion is in psp_controls.h, where it can
  * be unit-tested without the PSP SDK. Legacy is default: opt into the
- * PSP-native fight layout with controls=portable in bt3.txt.
+ * PSP-native fight layout is embedded as the default.
+ * controls=legacy in bt3.txt explicitly restores the former mapping.
  */
-int gPspControlsProfile = PSP_PROFILE_LEGACY;
+int gPspControlsProfile = PSP_PROFILE_DEFAULT;
 static PspControlsState sPspControls;
 extern int Psp_InFight(void);
+extern void Psp_Log(const char *fmt, ...);
+/* Count real input samples to confirm the live-fight profile is reached. */
+static unsigned sInputPortableLive, sInputPortableMenu, sInputLegacy;
+static unsigned sPortableActivatedOnce;
 
 int Port_PadRead(int socket, unsigned char *data) {
     static const struct { unsigned psp, normalized; } inputs[] = {
@@ -55,8 +61,24 @@ int Port_PadRead(int socket, unsigned char *data) {
     for (i = 0; i < sizeof(inputs) / sizeof(inputs[0]); ++i) {
         if (pad.Buttons & inputs[i].psp) normalized |= inputs[i].normalized;
     }
-    PspControls_Encode(&sPspControls, normalized, gPspControlsProfile, Psp_InFight(),
-                       (uint8_t)pad.Lx, (uint8_t)pad.Ly, data);
+    {
+        int in_fight = Psp_InFight();
+        if (gPspControlsProfile == PSP_PROFILE_PORTABLE) {
+            if (in_fight) {
+                ++sInputPortableLive;
+                if (!sPortableActivatedOnce) {
+                    Psp_Log("psp: INPUT portable fighting controls ACTIVE (first live fight sample)\n");
+                    sPortableActivatedOnce = 1;
+                }
+            } else {
+                ++sInputPortableMenu;
+            }
+        } else {
+            ++sInputLegacy;
+        }
+        PspControls_Encode(&sPspControls, normalized, gPspControlsProfile, in_fight,
+                           (uint8_t)pad.Lx, (uint8_t)pad.Ly, data);
+    }
     return 18;
 }
 
@@ -91,6 +113,10 @@ void Psp_VBlank(unsigned vblanks) {
         return;
     }
     vb = vblanks - vb0;
+    Psp_Log("psp: INPUT profile=%s samples: portable-fight=%u original-menu=%u legacy-selected=%u\n",
+            gPspControlsProfile == PSP_PROFILE_PORTABLE ? "portable" : "legacy",
+            sInputPortableLive, sInputPortableMenu, sInputLegacy);
+    sInputPortableLive = sInputPortableMenu = sInputLegacy = 0;
     {
         unsigned completed = Psp_GuFramesPresented();
         unsigned presented = completed - drawn0;

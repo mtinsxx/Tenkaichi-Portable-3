@@ -300,7 +300,7 @@ static void setting(const char *name, const char *value) {
     if (strcmp(name, "disc") == 0 && value[0] != '\0') {
         snprintf(gPspDisc, sizeof(gPspDisc), "%s", value);
     } else if (strcmp(name, "controls") == 0) {
-        /* Keep legacy default. Only an explicit opt-in changes fighting controls. */
+        /* Portable is the embedded default; legacy remains an explicit rollback. */
         if (strcmp(value, "portable") == 0) gPspControlsProfile = 1;
         else if (strcmp(value, "legacy") == 0) gPspControlsProfile = 0;
         else Psp_Log("psp: invalid controls=%s (expected legacy or portable)\n", value);
@@ -385,8 +385,10 @@ static void read_settings(void) {
     char line[400];
 
     if (fp == NULL) {
+        Psp_Log("psp: no bt3.txt in " HOME "; embedded defaults apply\n");
         return;
     }
+    Psp_Log("psp: reading settings from " HOME "/bt3.txt\n");
     while (fgets(line, sizeof(line), fp) != NULL) {
         char *h, *n = line, *v;
         if ((h = strchr(line, '#')) != NULL) {
@@ -457,6 +459,7 @@ int __wrap_main(int argc, char **argv) {
     sLog = fopen(HOME "/log.txt", "w");
     Psp_Log("======== new run ========\n");
     Psp_Log("psp: Dragon Ball Z BT3 (Tenkaichi3Decomp) for the PSP, built " __DATE__ " " __TIME__ "\n");
+    Psp_Log("psp: BUILD-ID TP3-PORTABLE-DEFAULT-20261026\n");
 
     setenv("BT3_DATA", HOME, 1);
     setenv("BT3_SAVES", HOME "/saves", 1);

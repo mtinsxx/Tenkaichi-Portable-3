@@ -100,8 +100,10 @@ jobs:
 
           1. Extraia a pasta PSP/GAME/BT3 no diretorio de memory stick do PPSSPP.
           2. O arquivo EBOOT.PBP e o programa compilado para PSP.
-          3. O arquivo bt3.txt ativa o esquema experimental controls=portable.
-             Para testar o esquema anterior, use controls=legacy.
+          3. Neste EBOOT, controls=portable ja vem ativado por padrao,
+             mesmo sem bt3.txt. Para comparar, use controls=legacy.
+          3a. Para confirmar o modo, abra PSP/GAME/BT3/log.txt e procure
+              BUILD-ID TP3-PORTABLE-DEFAULT-20261026 e INPUT profile.
           4. O programa nao inclui dados do jogo. Para avancar alem da
              verificacao do disco, forneca os arquivos da sua propria
              copia USA SLUS-21678 em PSP/GAME/BT3/disc/, conforme o README.
