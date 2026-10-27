@@ -51,6 +51,7 @@
 #include "psp_gs_static_skip.h"
 #include "psp_gu_scissor.h"
 #include "psp_gs_frame_mask.h"
+#include "psp_gs_fb_reconstruct.h"
 #include "psp_tex_reuse.h"
 #include "psp_tex_lru.h"
 #include "psp_t8_native.h"
@@ -143,6 +144,9 @@ typedef struct Target {
     uint32_t gen;  /* last GS upload generation when this FBP was rendered */
     int rendered;  /* a GU draw has written to this particular backing buffer */
     int used;
+    void *snapshot;      /* 512x512 RGB5551 main-RAM GE texture */
+    void *snapshotRaw;   /* original allocation, reused on target eviction */
+    PspGsFbVersion snapVersion;
 } Target;
 
 static unsigned int __attribute__((aligned(64))) sList[65536];
@@ -310,6 +314,8 @@ static unsigned sTargetsRegistered;
    conservatively share WORK0, with strict owner invalidation. */
 static uint32_t sWorkOwnerFbp[PSP_WORK_SURFACES] = {UINT32_MAX,UINT32_MAX};
 static unsigned sWorkPairSamples, sWorkPairOwnerMisses;
+static unsigned sFbSnapshotsSaved, sFbSnapshotsSampled;
+static unsigned sFbSnapshotsAllocFail, sFbSnapshotsDeferred;
 static unsigned sFbAliasHit, sFbAliasFallback, sFbAliasReupload;
 static unsigned sFbAliasUnrendered, sFbAliasSelf, sFbWorkOwnerChanges;
 static unsigned sTargetRebindInvalid, sTargetScreenCleared;
@@ -621,6 +627,43 @@ static void *target_color(uint32_t fbp) {
     return sVram + off;
 }
 
+/* Preserve a physical PSP backing before another PS2 FBP overwrites it.
+ * We enqueue GE transfer commands in the SAME list as the draws, so the
+ * GPU sees exact draw -> copy -> overwrite ordering. No synchronous
+ * readback, CPU pixel loop, global render stall or new texture format.
+ * The target's version prevents reuse after any later draw/GS upload.
+ * At most one transfer to a given RAM texture each PSP frame: the next
+ * transfer could clobber a texture still referenced by queued GE draws. */
+static int snapshot_target(int slot) {
+    Target *t;
+    uintptr_t aligned;
+    if(slot<0 || slot>=MAX_TARGETS)return 0;
+    t=&sTargets[slot];
+    if(!t->used||!t->rendered)return 0;
+    if(t->gen!=gGsPageGen[t->fbp & 511u])return 0;
+    if(!PspGsFb_CanSave(&t->snapVersion,sFrame)) {
+        ++sFbSnapshotsDeferred;
+        return 0;
+    }
+    if(!t->snapshot) {
+        t->snapshotRaw=malloc(PSP_GS_FB_SNAPSHOT_BYTES+63u);
+        if(!t->snapshotRaw) {++sFbSnapshotsAllocFail;return 0;}
+        aligned=((uintptr_t)t->snapshotRaw+63u)&~(uintptr_t)63u;
+        t->snapshot=(void *)aligned;
+        /* Black padding keeps T8/GU padding outside 480x272 defined. */
+        memset(t->snapshot,0,PSP_GS_FB_SNAPSHOT_BYTES);
+        sceKernelDcacheWritebackInvalidateRange(t->snapshot,
+                                                  PSP_GS_FB_SNAPSHOT_BYTES);
+    }
+    flush(); /* submit the last triangle BEFORE the GE copy */
+    sceGuCopyImage(GU_PSM_5551,0,0,PSP_GS_FB_COPY_W,
+                   PSP_GS_FB_COPY_H,BUF_W,t->color,
+                   0,0,BUF_W,t->snapshot);
+    sceGuTexFlush(); /* later GE texture reads must observe this copy */
+    PspGsFb_Saved(&t->snapVersion,sFrame,t->gen);
+    ++sFbSnapshotsSaved;
+    return 1;
+}
 static int target_get(uint32_t fbp, int create) {
     int i, slot = -1;
 
@@ -658,6 +701,7 @@ static int target_get(uint32_t fbp, int create) {
         return -1;
     }
     sTargets[slot].used = 1;
+    PspGsFb_Reset(&sTargets[slot].snapVersion);
     sTargets[slot].fbp = fbp;
     sTargets[slot].gen = 0;
     sTargets[slot].rendered = 0;  /* never sample uninitialized backing VRAM */
@@ -1480,8 +1524,9 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
         }
         int src = target_get(tbp / 32, 0);
         int targetReady = 0;
+        int snapshotReady = 0;
         if (src >= 0) {
-            const Target *old = &sTargets[src];
+            Target *old = &sTargets[src];
             /* A GS memory page can hold a framebuffer at one time and an
                ordinary texture after a host-to-local upload. Do not bind
                stale PSP framebuffer VRAM when the GS upload generation has
@@ -1498,8 +1543,27 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
                       sWorkOwnerFbp[psp_work_slot(old->color)],old->fbp))) {
                 if (psp_is_work(old->color)) ++sWorkPairSamples;
                 targetReady = 1;
+                /* A completed native 5551 image can be sampled from a
+                   padded main-RAM GE texture. Needed for full 272px
+                   height; source PSP work images are only 512x272 and
+                   cannot safely be GU 512x512 textures in-place.
+                   Cap at one capture per logical FBP per PSP frame. */
+                if(PspGsFb_SampleValid(&old->snapVersion,old->gen) ||
+                   snapshot_target(src)) {
+                    snapshotReady=1;
+                }
                 ++sFbAliasHit;
                 Psp_DiagAllIncident(PSP_DIAG_FB_ALIAS_VALID,ctx,tbp);
+            } else if ((tbp & 31u) == 0 &&
+                       old->gen==gGsPageGen[old->fbp & 511u] &&
+                       PspVram_CanAliasIndexed(tpsm) &&
+                       PspGsFb_SampleValid(&old->snapVersion,old->gen) &&
+                       old->fbp!=(uint32_t)fbp) {
+                /* The physical WORK surface was reused, but a previous
+                   image survives as a GE-ready main RAM texture. */
+                targetReady=1;
+                snapshotReady=1;
+                ++sFbSnapshotsSampled;
             } else {
                 ++sFbAliasFallback;
                 if (!PspVram_CanAliasIndexed(tpsm)) {
@@ -1557,14 +1621,17 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
             texIsTarget = 1;
             sTexClut = NULL;
             sTexClutTicket = 0;
-            tex = sTargets[src].color;
+            tex = snapshotReady ? sTargets[src].snapshot : sTargets[src].color;
             tw = 512;
-            th = 256;
+            th = snapshotReady ? 512 : 256;
             fmt = GU_PSM_5551;
-            us = (float)(1u << ((t0 >> 26) & 15)) / (float)SCR_W;
-            vs = (float)(1u << ((t0 >> 30) & 15)) / (float)SCR_H;
-            if (us > 1.0f) { us = 1.0f; }
-            if (vs > 1.0f) { vs = 1.0f; }
+            /* In a framebuffer alias the source GS coordinates describe
+               512x448 pixels; the PSP physical content is 480x272.
+               These multipliers convert PS2 texel units to real PSP
+               backing texels, rather than expanding coordinates by
+               TEX0.TW / PSP_SCREEN which caused missing image edges. */
+            us = 480.f/512.f;
+            vs = 272.f/448.f;
         }
     }
     targetIndex = target_get((uint32_t)fbp, 1);
@@ -1684,8 +1751,13 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
                                 sWorkOwnerFbp[workSlot]);
             for (k = 0; k < MAX_TARGETS; ++k)
                 if (k != targetIndex && sTargets[k].used &&
-                    sTargets[k].color == sTargets[targetIndex].color)
+                    sTargets[k].color == sTargets[targetIndex].color) {
+                    /* Copy the actual completed GE pixels before
+                       the next owner overwrites them. The copy stays
+                       queued in submission order; no CPU synchronizing. */
+                    snapshot_target(k);
                     sTargets[k].rendered = 0;
+                }
             sWorkOwnerFbp[workSlot] = (uint32_t)fbp;
         }
     }
@@ -1694,6 +1766,7 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
        to the actual decoded texture instead of stale framebuffer pixels. */
     sTargets[targetIndex].gen = gGsPageGen[(uint32_t)fbp & 511];
     sTargets[targetIndex].rendered = 1;
+    PspGsFb_OnDraw(&sTargets[targetIndex].snapVersion);
     /* GS coordinates 0..512 span the whole PSP width; height is 448. */
     sx = (float)SCR_W / 512.0f;
     sy = (float)SCR_H / 448.0f;
@@ -2648,6 +2721,9 @@ void Psp_GuStats(unsigned out[4]) {
             gPspNativeStageClip, sNativeStageCachedClipTriangles);
     sNativeStageCachedClipTriangles = 0;
     sNativeStageClipTriangles = sNativeStageClipOutside = sNativeStageClipFailed = 0;
+    Psp_Log("psp: GS framebuffer virtualization: saved=%u sampled-after-owner-change=%u allocation-failed=%u transfer-deferred=%u; packed GS alpha/PSMT8 remains unavailable\n",
+            sFbSnapshotsSaved,sFbSnapshotsSampled,sFbSnapshotsAllocFail,sFbSnapshotsDeferred);
+    sFbSnapshotsSaved=sFbSnapshotsSampled=sFbSnapshotsAllocFail=sFbSnapshotsDeferred=0;
     Psp_Log("psp: architecture gaps: unimplemented-fb-readbacks=%u native-effects=%u (no pixels copied for FB readback)\n",
             sDiagUnimplementedFbUpload, sDiagUnimplementedNativeEffect);
     sDiagUnimplementedFbUpload = sDiagUnimplementedNativeEffect = 0;

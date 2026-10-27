@@ -173,6 +173,13 @@ jobs:
           set -euo pipefail
           python3 port/psp/test_vu_env.py
 
+      - name: Test PS2 framebuffer lifetime/virtual snapshot translation
+        run: |
+          set -euo pipefail
+          gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/psp \
+            port/psp/test_gs_fb_reconstruct.c -o /tmp/tp3-fb-reconstruct
+          /tmp/tp3-fb-reconstruct
+
       - name: Compile PSP EBOOT using official pspdev SDK
         run: |
           set -euo pipefail
