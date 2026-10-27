@@ -48,8 +48,11 @@ def main():
     verify("sceKernelTotalFreeMemSize()" in MAIN
            and "sceKernelMaxFreeMemSize()" in MAIN,
            "diagnostics identify kernel memory pressure and block fragmentation")
-    verify("No bt3.txt is required." in MAIN,
-           "experimental EBOOT still requires no optional config file")
+    verify("int gPspLogAll = 1;" in MAIN
+           and "read_settings();" not in MAIN
+           and 'fopen(HOME "/bt3.txt"' not in MAIN
+           and "static void setting(" not in MAIN,
+           "native EBOOT collects diagnostics without opening bt3.txt")
     print("PSP game-thread OOM startup ordering checks passed")
     print("Runtime confirmation requires PPSSPP Android and its log.txt")
 
