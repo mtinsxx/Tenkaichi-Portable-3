@@ -154,6 +154,13 @@ jobs:
             port/psp/test_gs_scissor.c -lm -o /tmp/tp3-gs-scissor
           /tmp/tp3-gs-scissor
 
+      - name: Test native VU1 batch static skip memoization
+        run: |
+          set -euo pipefail
+          gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/psp \
+            port/psp/test_gs_static_skip.c -o /tmp/tp3-gs-static-skip
+          /tmp/tp3-gs-static-skip
+
       - name: Compile PSP EBOOT using official pspdev SDK
         run: |
           set -euo pipefail

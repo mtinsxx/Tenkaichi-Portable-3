@@ -48,6 +48,7 @@
 #include "psp_gs_fb16.h"
 #include "psp_gs_depth_z.h"
 #include "psp_gs_scissor.h"
+#include "psp_gs_static_skip.h"
 #include "psp_tex_reuse.h"
 #include "psp_tex_lru.h"
 #include "psp_t8_native.h"
@@ -185,6 +186,8 @@ static unsigned sFrame;
 static PspDiagAll sPspLogAll;
 static unsigned sDraws, sSkipped, sNewTex, sBatches;
 static unsigned sGsEmptyClipRejects, sGsPrimitiveClipRejects;
+static unsigned sGsNativeStaticSkips;
+static unsigned sLastDrawStaticSkip;
 /* PSP-native stage (VU1 program 4), without replacing the game/GS logic. */
 static PspStage4Vertex sStage4Prepared[1024];
 static PspStageClipVertex sStage4ClipSource[1024];
@@ -1398,6 +1401,7 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
     int profSample = ((++sProfDrawCalls & 15u) == 0);
     unsigned long long profStart = profSample ? Psp_TimeUs() : 0;
 
+    sLastDrawStaticSkip=PSP_GS_STATIC_NONE;
     if (!sReady) {
         if (profSample) {
             sProfDrawSampleUs += Psp_TimeUs() - profStart;
@@ -1441,9 +1445,11 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
         if (native16) ++sDiagFb16Native;
         if ((!native16 && is16) || fbp == zbp) {
             if (is16 && !native16) {
+                sLastDrawStaticSkip=PSP_GS_STATIC_COLOR16;
                 ++sDiagSkip16;
                 Psp_DiagAllIncident(PSP_DIAG_DRAW_SKIP_COLOR16,ctx,framePsm);
             } else {
+                sLastDrawStaticSkip=PSP_GS_STATIC_DEPTH_ALIAS;
                 ++sDiagSkipDepth;
                 Psp_DiagAllIncident(PSP_DIAG_DRAW_SKIP_DEPTH_ALIAS,ctx,(uint32_t)zbp);
             }
@@ -1468,6 +1474,7 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
             (Psp_GsIsHighIndexed(tpsm) && !gPspGsHiTex) ||
             (tpsm & 0x30) == 0x30) {
             ++sDiagSkipPsm;
+            sLastDrawStaticSkip=PSP_GS_STATIC_SPECIAL_TEXTURE;
             Psp_DiagAllIncident(PSP_DIAG_DRAW_SKIP_SPECIAL_TEXTURE,ctx,tpsm);
             sSkipped++;
             if (profSample) {
@@ -1926,6 +1933,7 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
    the fighter adapter to preserve the original GS->GU dispatch order. */
 typedef struct PspStageFastBatch {
     int active;
+    PspGsStripSkip stableSkip;
     PspStageTriScale scale;
 } PspStageFastBatch;
 static void Psp_NativeEmitTriangle(PspStageFastBatch *b, int ctx,
@@ -2122,6 +2130,24 @@ int Psp_Stage4Prepare(int ctx, const float *vertices, uint32_t count,
 static void Psp_NativeEmitTriangle(PspStageFastBatch *b, int ctx,
                                    const GsVertex tri[3], int fighter) {
     if (!fighter) Psp_DiagAllIncident(PSP_DIAG_STAGE_TRIANGLE,ctx,0);
+    if (PspGsStripSkip_Next(&b->stableSkip)) {
+        /* Same immutable GS registers throughout the native VU batch.
+           Only previous statically rejected formats are memoized, NOT
+           scissor culls, decoded-texture misses or scene visibility. */
+        ++sGsNativeStaticSkips;
+        ++sDraws; ++sSkipped;
+        if (b->stableSkip.kind == PSP_GS_STATIC_COLOR16) {
+            ++sDiagSkip16;
+            Psp_DiagAllIncident(PSP_DIAG_DRAW_SKIP_COLOR16,ctx,0);
+        } else if (b->stableSkip.kind == PSP_GS_STATIC_DEPTH_ALIAS) {
+            ++sDiagSkipDepth;
+            Psp_DiagAllIncident(PSP_DIAG_DRAW_SKIP_DEPTH_ALIAS,ctx,0);
+        } else {
+            ++sDiagSkipPsm;
+            Psp_DiagAllIncident(PSP_DIAG_DRAW_SKIP_SPECIAL_TEXTURE,ctx,0);
+        }
+        return;
+    }
     if (b->active) {
         int i;
         if (sVbCount + 3 > MAX_QUEUE) flush();
@@ -2160,6 +2186,11 @@ static void Psp_NativeEmitTriangle(PspStageFastBatch *b, int ctx,
         unsigned skipped = sSkipped, draws = sDraws;
         int i, alias = 0;
         GsGpu_Draw(3, ctx, tri);
+        if (sSkipped != skipped &&
+            PspGsStripSkip_MaySkip(sLastDrawStaticSkip)) {
+            PspGsStripSkip_Set(&b->stableSkip,sLastDrawStaticSkip);
+            return;
+        }
         /* Only the default flat-color path has verified equivalence
            in PspStageTriPack; nondefault flat_sprite=0 stays slow. */
         if (!(fighter ? gPspNativeFighterBatch : gPspNativeStageBatch) ||
@@ -2620,6 +2651,8 @@ void Psp_GuStats(unsigned out[4]) {
     Psp_Log("psp: GS source scissor culling: empty=%u fully-outside=%u (before texture cache/GE)\n",
             sGsEmptyClipRejects,sGsPrimitiveClipRejects);
     sGsEmptyClipRejects=sGsPrimitiveClipRejects=0;
+    Psp_Log("psp: GS native VU repeated static-format draw skips saved=%u\n",sGsNativeStaticSkips);
+    sGsNativeStaticSkips=0;
     Psp_Log("psp: GS menu passes: screen=%u work=%u skipped_fb16=%u skipped_depth=%u skipped_special_texture=%u missing_texture=%u no_target=%u\n",
             sDiagDrawMain, sDiagDrawWork, sDiagSkip16, sDiagSkipDepth,
             sDiagSkipPsm, sDiagSkipTexMem, sDiagSkipNoTarget);
