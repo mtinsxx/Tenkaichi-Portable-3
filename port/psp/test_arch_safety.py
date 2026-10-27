@@ -48,6 +48,15 @@ def main():
     require("sDiagUnimplementedFbUpload" in gu and
             "sDiagUnimplementedNativeEffect" in gu,
             "GS native/fb readback no-ops are reported, not claimed complete")
+    allocation = gu.split("t = &sTex[sTexCount++];", 1)[1].split(
+        "t->tex0 = t0;", 1)[0]
+    require("++sTexSerial" not in allocation and
+            "Psp_TexReuseRemember" in allocation and
+            "++sTexSerial" in gu.split("static int tex_evict_one", 1)[1],
+            "cache append preserves indices; eviction invalidates hot descriptors")
+    require("PspStage4_TransformClipReady(o, p, p + 4, p + 8" in gu and
+            "clip->clip" in gu,
+            "native stage reuses already validated clip coordinates")
     require("if (name == NULL) return NULL;" in gfx and
             "if (name[4]" not in gfx.split("char *Psp_GsGetenv(", 1)[1].split("\n}", 1)[0],
             "environment lookup handles short/null names")

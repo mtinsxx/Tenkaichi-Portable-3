@@ -62,6 +62,44 @@ int main(void) {
     assert(PspStage4_Color(42.99f) == 42);
     assert(PspStage4_Color(999.0f) == 255);
     assert(PspStage4_Color(0.0f) == 0);
+    /* Validate bit-exact native stage output and identical fallback on
+       clipped, perspective, negative W and non-finite inputs. */
+    {
+        const float positions[][4] = {
+            {0.25f,0.5f,0.75f,1.f}, {0.2f,-0.3f,0.8f,2.f},
+            {1.5f,0.1f,0.f,1.f}, {0.1f,0.1f,0.f,0.f},
+            {0.1f,0.1f,0.f,-1.f}, {0.3f,0.2f,0.1f,1.f}
+        };
+        PspStage4Vertex reference, accelerated;
+        unsigned j,k;
+        for(j=0;j<4;++j) for(k=0;k<4;++k) {
+            m[j*4+k] = j==k ? (j==0 ? 0.75f : 1.f) : 0.f;
+            m[16+j*4+k] = j==k ? 1.f : 0.f;
+        }
+        for(k=0;k<sizeof(positions)/sizeof(positions[0]);++k) {
+            float in[4],clip[4];
+            int ok_reference,ok_accelerated;
+            memcpy(in,positions[k],sizeof(in));
+            if(k==5u) in[1]=__builtin_nanf("");
+            PspStage4_Multiply(clip,m+16,in);
+            memset(&reference,0,sizeof(reference));
+            memset(&accelerated,0,sizeof(accelerated));
+            ok_reference=PspStage4_Transform(&reference,in,color,st,m,0.1f,0.2f);
+            ok_accelerated=PspStage4_TransformClipReady(
+                &accelerated,in,color,st,m,clip,0.1f,0.2f);
+            assert(ok_reference==ok_accelerated);
+            if(ok_reference)
+                assert(memcmp(&reference,&accelerated,sizeof(reference))==0);
+        }
+        /* Invalid clip remains rejected rather than drawing artifacts. */
+        {
+            float in[4]={0.1f,0.1f,0.f,1.f},clip[4];
+            PspStage4_Multiply(clip,m+16,in);
+            clip[0]=__builtin_nanf("");
+            assert(!PspStage4_TransformClipReady(
+                &accelerated,in,color,st,m,clip,0.f,0.f));
+        }
+    }
     puts("PSP native VU1 stage4 matrix/clip/color/fallback checks passed");
     return 0;
 }

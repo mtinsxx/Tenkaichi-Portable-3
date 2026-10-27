@@ -42,6 +42,17 @@ jobs:
             port/psp/test_gs_text_blend.c -o /tmp/psp-font-blend-test
           /tmp/psp-font-blend-test
 
+      - name: Test native stage clip reuse and texture-cache index lifetime
+        run: |
+          set -euo pipefail
+          gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/psp \
+            port/psp/test_stage4.c -lm -o /tmp/tp3-stage4-parity
+          /tmp/tp3-stage4-parity
+          gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/psp \
+            port/psp/test_tex_reuse.c -o /tmp/tp3-texture-index
+          /tmp/tp3-texture-index
+          python3 port/psp/test_arch_safety.py
+
       - name: Compile PSP EBOOT using official pspdev SDK
         run: |
           set -euo pipefail

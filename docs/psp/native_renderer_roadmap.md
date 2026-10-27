@@ -1,0 +1,52 @@
+# Tenkaichi Portable 3 — native PSP renderer roadmap
+
+Goal: keep BT3's fighter meshes, animation, gameplay and anime outline while reducing the cost of reproducing PS2 GS/VU1 on PSP. Tenkaichi Tag Team is an **efficiency reference**, not an asset or code donor. No proprietary game files belong in this repository.
+
+## Starting evidence (user PPSSPP `log.txt`, October 2026)
+
+- Late battle sample: 4 GS chains took 2234 ms in a 2.46 s interval; estimated VU1 interpreter 1052 ms (292 stage-program 399 runs); estimated GS draw 844 ms (71540 draws). Estimates overlap; do not add them as independent times.
+- 48903 texture cache evictions accumulated by that point, and the framebuffer alias counters recorded large fallback/reupload totals. These are cumulative events, **not** proven hardware upload counts.
+- Actual visible runtime measured 1.6–1.9 GS FPS in slow battle windows. A green CI build is not evidence of increased FPS.
+- Defects remain in stages, UI/menu colour, HUD/gauges, framebuffer composition and effects; `GsGpu_FbUpload` and `GsGpu_Native` are incomplete and must not be described as implemented.
+
+## Renderer path, source ownership
+
+1. `port/src/gs/gs_core.c`: GS packet front end, GIF/VIF dispatch, page hashes and VRAM generations.
+2. `port/src/gs/gs_vu1.c`: original VU1 instruction interpreter and native program routing.
+3. `port/psp/psp_stage4.h`, `psp_stage4_clip.h`, `psp_fighter_vu1.h`: native transformed stage and fighter vertices.
+4. `port/psp/psp_gu.c`: PSP GE triangle/sprite/state submission, framebuffer aliasing and texture cache.
+5. `port/psp/psp_gfx.c`, `psp_main.c`: clocks, inputs and performance reports.
+6. `port/src/plat_mpeg2.c` and `port/src/plat_movie.c`: separate MPEG opening path.
+
+## Execution steps and proof
+
+### Step A — safe duplicate-work removal (first code iteration)
+
+- Avoid multiplying the same clip matrix twice for validated native stage vertices: native clip input already owns those floats. Keep all visibility, colour, UV and W checks identical.
+- Preserve hot texture descriptor indices on append. Only destructive descriptor changes (eviction/memmove) bump the table serial; GS memory updates still invalidate through the upload epoch.
+- Host checks assert exact transformed vertex bytes and cache invalidation rules. SDK CI builds EBOOT; real PPSSPP runtime improvement remains unproven until tested.
+
+### Step B — VU1/GS native geometry
+
+- Count stage-program 399 rejects by reason (invalid W/clip/matrix/buffer) and trace which states force the interpreter.
+- Expand exact native clipping only where tested against reference output, preserving shadow, outlines, UV and perspective semantics.
+- Reduce redundant GS register and texture calculations across **compatible** adjacent draws. Never reorder alpha-dependent primitives to chase batches.
+- Compare VU1 time, GS draw time, native-fallback ratios and GS FPS against the original baseline on the same scene.
+
+### Step C — correct framebuffer/UI composition
+
+- Implement or faithfully adapt missing framebuffer readback/copy and native effect passes; test screens, stage overlays and health/Ki bars individually.
+- Retain PR22 / `fe93677` white text texture modulation, GS FIX alpha conversion, palette and stencil checks.
+- Do not reduce the fighters' model meshes or disable cel outlines to claim a speedup.
+
+### Step D — movie and sustained gameplay
+
+- Profile MPEG opening separately; avoid confusing video FPS with gameplay.
+- Measure 30+ seconds in opening, menu and real fights with same PPSSPP device/settings and compare quality screenshots.
+- Performance goals (5, 10, 20–30 FPS) are **targets**, not guarantees. No automatic graphic sacrifice and no claim that the PSP has native PS2 GS capabilities.
+
+## Safety / release gates
+
+- Host invariants and pspdev EBOOT CI must pass; no copyrighted ISO, ELF or extracted game assets committed.
+- A render optimization must preserve characters, menus, colour, clipping, alpha and frame order or remain behind an explicit rollback.
+- When runtime tests are absent, report code change and build success only — **do not claim measured FPS improvements**.

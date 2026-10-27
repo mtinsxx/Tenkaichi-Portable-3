@@ -824,7 +824,9 @@ static void *texture_get(int ctx, unsigned lodCap, int white_sprite,
         if (heap_alloc != NULL) sceKernelDcacheWritebackRange(ptr, bytes);
         sceGuTexFlush();
         t = &sTex[sTexCount++];
-        ++sTexSerial;
+        /* Appending does not shift existing descriptors. Keep those hot
+           texture keys valid. Evictions still bump sTexSerial before
+           moving indices; VRAM uploads invalidate via texture epoch. */
         Psp_TexReuseRemember(&sTexReuse[reuseSlot], t0, texa,
                              gGsPspTextureEpoch, sTexSerial,
                              lodCap, white_sprite, (unsigned)(sTexCount - 1));
@@ -1749,8 +1751,9 @@ static int Psp_Stage4PrepareDirect(int ctx, const float *vertices,
                 ++sNativeStageFallback;
                 return 0;
             }
-        } else if (!PspStage4_Transform(o, p, p + 4, p + 8,
-                                         consts, ox, oy)) {
+        } else if (!PspStage4_TransformClipReady(o, p, p + 4, p + 8,
+                                                   consts, clip->clip,
+                                                   ox, oy)) {
             ++sNativeStageFallback;
             ++sNativeStageClipFailed;
             return 0;

@@ -43,14 +43,16 @@ static inline uint8_t PspStage4_Color(float c) {
    coordinates; only then is it safe to hand the whole strip to the
    old VU1 interpreter (never drop it from the scene).
    clip/pos are float4 in PS2 VU program 4's native packet order. */
-static inline int PspStage4_Transform(PspStage4Vertex *out, const float *pos,
-                                     const float *color, const float *st,
-                                     const float *matrix,
+/* The renderer already computed clip[] for the six frustum planes.
+ * Reusing it avoids the duplicate 4x4 clip matrix multiplication. */
+static inline int PspStage4_TransformClipReady(PspStage4Vertex *out,
+                                     const float *pos, const float *color,
+                                     const float *st, const float *matrix,
+                                     const float clip[4],
                                      float xyoffX, float xyoffY) {
-    float screen[4], clip[4], q, z;
+    float screen[4], q, z;
     unsigned i;
     PspStage4_Multiply(screen, matrix, pos);
-    PspStage4_Multiply(clip, matrix + 16, pos);
     for (i = 0; i < 4; ++i) {
         if (!__builtin_isfinite(screen[i]) || !__builtin_isfinite(clip[i]))
             return 0;
@@ -80,5 +82,14 @@ static inline int PspStage4_Transform(PspStage4Vertex *out, const float *pos,
     out->a = PspStage4_Color(color[3]);
     return __builtin_isfinite(out->x) && __builtin_isfinite(out->y);
 }
-
+/* Preserve the original entry point for independent users and validation. */
+static inline int PspStage4_Transform(PspStage4Vertex *out, const float *pos,
+                                     const float *color, const float *st,
+                                     const float *matrix,
+                                     float xyoffX, float xyoffY) {
+    float clip[4];
+    PspStage4_Multiply(clip, matrix + 16, pos);
+    return PspStage4_TransformClipReady(out, pos, color, st, matrix,
+                                        clip, xyoffX, xyoffY);
+}
 #endif

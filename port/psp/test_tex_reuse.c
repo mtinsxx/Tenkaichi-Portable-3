@@ -18,6 +18,12 @@ int main(void) {
     assert(!Psp_TexReuseMatches(&hot[s], t, a, 7, 12, 128, 0, 4));
     assert(!Psp_TexReuseMatches(&hot[s], t, a, 7, 12, 256, 1, 4));
     assert(!Psp_TexReuseMatches(&hot[s], t, a, 7, 12, 256, 0, 3));
+    /* Appending keeps all existing descriptor indices unchanged. */
+    assert(Psp_TexReuseMatches(&hot[s], t, a, 7, 12, 256, 0, 5));
+    /* Evictions move descriptors, so changing serial must invalidate. */
+    assert(!Psp_TexReuseMatches(&hot[s], t, a, 7, 13, 256, 0, 5));
+    /* GS VRAM uploads must still invalidate through global epoch. */
+    assert(!Psp_TexReuseMatches(&hot[s], t, a, 8, 12, 256, 0, 5));
     puts("PSP GS guarded texture reuse invalidation passed");
     return 0;
 }
