@@ -37,6 +37,7 @@
 #include "psp_stage4.h"
 #include "psp_stage4_clip.h"
 #include "psp_stage_clip_cache.h"
+#include "psp_log_all.h"
 #include "psp_gu_swap_check.h"
 #include "psp_scene_pair.h"
 #include "psp_hud_overlay.h"
@@ -161,6 +162,7 @@ static Vtx *sVb;             /* the vertex batch: ordinary memory, the engine re
 static int sVbCount, sVbMode; /* count, and what primitives the batch holds */
 static int sReady;
 static unsigned sFrame;
+static PspDiagAll sPspLogAll;
 static unsigned sDraws, sSkipped, sNewTex, sBatches;
 /* PSP-native stage (VU1 program 4), without replacing the game/GS logic. */
 static PspStage4Vertex sStage4Prepared[1024];
@@ -313,6 +315,42 @@ extern int gPspHudTopOverlay;
 extern int gPspHudMaskFix;
 extern int gPspGsFb16;
 extern int gPspTextureScratch;
+extern int gPspLogAll;
+/* Immutable sample of live GS context, recorded once per incident class. */
+static void Psp_DiagAllIncident(unsigned kind, int ctx, uint32_t detail) {
+    PspDiagAllSample s;
+    if (!gPspLogAll) return;
+    memset(&s, 0, sizeof(s));
+    s.frame=sFrame; s.ctx=ctx; s.detail=detail;
+    s.prim=gGs.prim;
+    if (ctx>=0 && ctx<=1) {
+        s.fbp=(uint32_t)(gGs.frame[ctx] & 0x1FFu);
+        s.zbp=(uint32_t)(gGs.zbuf[ctx] & 0x1FFu);
+        s.tex0=gGs.tex0[ctx];
+        s.tbp=(uint32_t)((gGs.tex0[ctx] & 0x3FFFu)/32u);
+        s.test=gGs.test[ctx];
+    }
+    PspDiagAll_Record(&sPspLogAll,kind,&s);
+}
+static void Psp_DiagAllReport(void) {
+    unsigned i;
+    if (!gPspLogAll) return;
+    Psp_Log("psp: LOG_ALL v1 begin sample-end-frame=%u depth-mode=%d current-main-fbp=%d previous-fbp=%d draw-offset=0x%x\n",
+            sFrame,gPspGsDepth,gGsMainFbp,gGsDisplayOtherFbp,sMainDrawOffset);
+    for (i=0;i<PSP_DIAG_COUNT;i++) {
+        const PspDiagAllSample *s=&sPspLogAll.first[i];
+        if (!sPspLogAll.counts[i]) continue;
+        Psp_Log("psp: LOG_ALL kind=%s count=%u first-frame=%u last-frame=%u sample-ctx=%d fbp=%u zbp=%u tbp=%u texpsm=%u fbpsm=%u test=%08llx prim=%llx detail=%u\n",
+                PSP_DIAG_LABELS[i],sPspLogAll.counts[i],s->frame,
+                sPspLogAll.lastFrame[i],s->ctx,s->fbp,s->zbp,s->tbp,
+                (unsigned)((s->tex0>>20)&63u),
+                (unsigned)(s->ctx>=0&&s->ctx<=1 ? (gGs.frame[s->ctx]>>24)&63u : 0u),
+                (unsigned long long)s->test,(unsigned long long)s->prim,s->detail);
+    }
+    Psp_Log("psp: LOG_ALL v1 end; non-listed categories had zero observed events. Counts do not prove visible pixel corruption.\n");
+    PspDiagAll_Reset(&sPspLogAll);
+}
+
 
 /* ---- the state the engine is in (only what changed is sent again) ---- */
 static struct {
@@ -1228,8 +1266,13 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
                                  (uint32_t)zbp, gPspGsFb16);
         if (native16) ++sDiagFb16Native;
         if ((!native16 && is16) || fbp == zbp) {
-            if (is16 && !native16) ++sDiagSkip16;
-            else ++sDiagSkipDepth;
+            if (is16 && !native16) {
+                ++sDiagSkip16;
+                Psp_DiagAllIncident(PSP_DIAG_DRAW_SKIP_COLOR16,ctx,framePsm);
+            } else {
+                ++sDiagSkipDepth;
+                Psp_DiagAllIncident(PSP_DIAG_DRAW_SKIP_DEPTH_ALIAS,ctx,(uint32_t)zbp);
+            }
         sSkipped++;
         if (profSample) {
             sProfDrawSampleUs += Psp_TimeUs() - profStart;
@@ -1251,6 +1294,7 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
             (Psp_GsIsHighIndexed(tpsm) && !gPspGsHiTex) ||
             (tpsm & 0x30) == 0x30) {
             ++sDiagSkipPsm;
+            Psp_DiagAllIncident(PSP_DIAG_DRAW_SKIP_SPECIAL_TEXTURE,ctx,tpsm);
             sSkipped++;
             if (profSample) {
                 sProfDrawSampleUs += Psp_TimeUs() - profStart;
@@ -1275,14 +1319,23 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
                 (old->color != sVram + WORK_OFF || sWorkOwnerFbp == old->fbp)) {
                 targetReady = 1;
                 ++sFbAliasHit;
+                Psp_DiagAllIncident(PSP_DIAG_FB_ALIAS_VALID,ctx,tbp);
             } else {
                 ++sFbAliasFallback;
                 if (old->gen != gGsPageGen[old->fbp & 511]) {
                     ++sFbAliasReupload;
+                    Psp_DiagAllIncident(PSP_DIAG_FB_INVALID_GENERATION,ctx,old->fbp);
                 } else if (!old->rendered) {
                     ++sFbAliasUnrendered;
+                    Psp_DiagAllIncident(PSP_DIAG_FB_NOT_RENDERED,ctx,old->fbp);
                 } else if (old->fbp == (uint32_t)fbp) {
                     ++sFbAliasSelf;
+                    Psp_DiagAllIncident(PSP_DIAG_FB_SELF_ALIAS,ctx,old->fbp);
+                } else if (old->color == sVram + WORK_OFF &&
+                           sWorkOwnerFbp != old->fbp) {
+                    Psp_DiagAllIncident(PSP_DIAG_FB_WORK_OWNER,ctx,old->fbp);
+                } else {
+                    Psp_DiagAllIncident(PSP_DIAG_FB_OTHER_ALIAS,ctx,old->fbp);
                 }
             }
         }
@@ -1291,6 +1344,8 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
                               whiteSprite, &tw, &th, &fmt);
             if (tex == NULL) {
                 ++sDiagSkipTexMem;
+                Psp_DiagAllIncident(PSP_DIAG_DRAW_SKIP_TEX_DECODE,ctx,
+                                    (uint32_t)((t0>>20)&63u));
                 sSkipped++;
                 if (profSample) {
                     sProfDrawSampleUs += Psp_TimeUs() - profStart;
@@ -1329,6 +1384,7 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
     targetIndex = target_get((uint32_t)fbp, 1);
     if (targetIndex < 0) {
         ++sDiagSkipNoTarget;
+        Psp_DiagAllIncident(PSP_DIAG_DRAW_SKIP_NO_TARGET,ctx,(uint32_t)fbp);
         sSkipped++;
         if (profSample) {
             sProfDrawSampleUs += Psp_TimeUs() - profStart;
@@ -1439,6 +1495,7 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
         flush();
         ++sFbWorkOwnerChanges;
         ++sFrameWorkOwners;
+        Psp_DiagAllIncident(PSP_DIAG_FB_WORK_REPLACED,ctx,sWorkOwnerFbp);
         for (k = 0; k < MAX_TARGETS; ++k) {
             if (k != targetIndex && sTargets[k].used &&
                 sTargets[k].color == sVram + WORK_OFF) {
@@ -1775,7 +1832,10 @@ static int Psp_Stage4PrepareDirect(int ctx, const float *vertices,
     PspStageClipCache_Reset(&sStage4ClipCache);
     ++sFrameStageInputs;
     if (!gPspNativeStage4 || count < 3 || count > 1024 ||
-        !sReady || ctx < 0 || ctx > 1 || !vertices || !consts) return 0;
+        !sReady || ctx < 0 || ctx > 1 || !vertices || !consts) {
+        Psp_DiagAllIncident(PSP_DIAG_STAGE_BAD_ARGS,ctx,count);
+        return 0;
+    }
     ox = (float)(gGs.xyoffset[ctx] & 0xFFFFu) / 16.0f;
     oy = (float)((gGs.xyoffset[ctx] >> 32) & 0xFFFFu) / 16.0f;
     for (i = 0; i < count; ++i) {
@@ -1785,6 +1845,7 @@ static int Psp_Stage4PrepareDirect(int ctx, const float *vertices,
         if (!PspStage4_ClipInput(clip, p, p + 4, p + 8, consts + 16)) {
             ++sNativeStageFallback;
             ++sNativeStageClipFailed;
+            Psp_DiagAllIncident(PSP_DIAG_STAGE_INVALID_CLIP_INPUT,ctx,i);
             return 0;
         }
         sStage4ClipFlag[i] = clip->mask;
@@ -1794,6 +1855,7 @@ static int Psp_Stage4PrepareDirect(int ctx, const float *vertices,
                individual triangles instead of rerunning all VU1. */
             if (!gPspNativeStageClip) {
                 ++sNativeStageFallback;
+                Psp_DiagAllIncident(PSP_DIAG_STAGE_CLIP_DISABLED,ctx,i);
                 return 0;
             }
         } else if (!PspStage4_TransformClipReady(o, p, p + 4, p + 8,
@@ -1801,6 +1863,7 @@ static int Psp_Stage4PrepareDirect(int ctx, const float *vertices,
                                                    ox, oy)) {
             ++sNativeStageFallback;
             ++sNativeStageClipFailed;
+            Psp_DiagAllIncident(PSP_DIAG_STAGE_INVALID_PROJECTION,ctx,i);
             return 0;
         }
     }
@@ -1820,6 +1883,7 @@ static int Psp_Stage4PrepareDirect(int ctx, const float *vertices,
                                          consts + 32, ox, oy)) {
                 ++sNativeStageFallback;
                 ++sNativeStageClipFailed;
+                Psp_DiagAllIncident(PSP_DIAG_STAGE_POLY_FAILURE,ctx,i);
                 return 0;
             }
         }
@@ -1839,8 +1903,10 @@ int Psp_Stage4Prepare(int ctx, const float *vertices, uint32_t count,
     unsigned oldFallback = sNativeStageFallback;
     unsigned oldClipFailed = sNativeStageClipFailed;
     sStage4Culled = 0;
-    if (Psp_Stage4PrepareDirect(ctx, vertices, count, consts))
+    if (Psp_Stage4PrepareDirect(ctx, vertices, count, consts)) {
+        Psp_DiagAllIncident(PSP_DIAG_STAGE_NATIVE_ACCEPT,ctx,count);
         return 1;
+    }
     if (gPspNativeStageCull && gPspNativeStage4 && sReady &&
         ctx >= 0 && ctx <= 1 && vertices && consts &&
         PspStage4_EntireStripOutside(vertices, count, consts + 16)) {
@@ -1854,8 +1920,10 @@ int Psp_Stage4Prepare(int ctx, const float *vertices, uint32_t count,
         sStage4Culled = 1;
         ++sNativeStageCulledStrips;
         sNativeStageCulledVerts += count;
+        Psp_DiagAllIncident(PSP_DIAG_STAGE_TRIVIAL_CULL,ctx,count);
         return 1;
     }
+    Psp_DiagAllIncident(PSP_DIAG_STAGE_INTERPRETER,ctx,count);
     return 0;
 }
 
@@ -1868,6 +1936,7 @@ int Psp_Stage4Prepare(int ctx, const float *vertices, uint32_t count,
    winding, flat-shading and the existing affine ST/Q behavior. */
 static void Psp_NativeEmitTriangle(PspStageFastBatch *b, int ctx,
                                    const GsVertex tri[3], int fighter) {
+    if (!fighter) Psp_DiagAllIncident(PSP_DIAG_STAGE_TRIANGLE,ctx,0);
     if (b->active) {
         int i;
         if (sVbCount + 3 > MAX_QUEUE) flush();
@@ -2009,6 +2078,7 @@ void GsGpu_FbUpload(int second) {
        equivalent readback/copy here: flush() only submits queued draws.
        Log reachability without claiming the effect has been ported. */
     ++sDiagUnimplementedFbUpload;
+    Psp_DiagAllIncident(PSP_DIAG_FB_UPLOAD_UNSUPPORTED,-1,(unsigned)second);
     flush();
     (void)second;
 }
@@ -2016,6 +2086,7 @@ void GsGpu_FbUpload(int second) {
 void GsGpu_Native(int effect) {
     /* Native post-processing is not implemented on the PSP. */
     ++sDiagUnimplementedNativeEffect;
+    Psp_DiagAllIncident(PSP_DIAG_NATIVE_EFFECT_UNSUPPORTED,-1,(unsigned)effect);
     (void)effect;
 }
 
@@ -2458,4 +2529,5 @@ void Psp_GuStats(unsigned out[4]) {
     Psp_Log("psp: TARGET freshness=%d invalid-rebind=%u invalid-screen-clear=%u per interval\n",
             gPspTargetFreshness, sTargetRebindInvalid, sTargetScreenCleared);
     sTargetRebindInvalid = sTargetScreenCleared = 0;
+    Psp_DiagAllReport(); /* one bounded report for this two-second interval */
 }

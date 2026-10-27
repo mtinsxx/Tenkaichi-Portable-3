@@ -79,6 +79,14 @@ jobs:
             port/psp/test_stage_clip_cache.c -lm -o /tmp/tp3-stage-fans
           /tmp/tp3-stage-fans
 
+      - name: Test bounded PSP renderer LOG_ALL incident collection
+        run: |
+          set -euo pipefail
+          gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/psp \
+            port/psp/test_log_all.c -o /tmp/tp3-log-all
+          /tmp/tp3-log-all
+          python3 port/psp/test_arch_safety.py
+
       - name: Compile PSP EBOOT using official pspdev SDK
         run: |
           set -euo pipefail

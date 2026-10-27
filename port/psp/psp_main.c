@@ -161,6 +161,8 @@ unsigned long long Psp_TimeUs(void) {
    force one immediately on startup, fatal errors and exit. Optional
    log_flush=1 preserves per-line flushing for crash investigations. */
 int sLogFlush = 0;
+/* Full renderer incident tracking. Off by default to keep normal FPS. */
+int gPspLogAll = 0;
 
 void Psp_Log(const char *fmt, ...) {
     char msg[1024];
@@ -361,6 +363,8 @@ static void setting(const char *name, const char *value) {
         gPspTextureScratch = atoi(value) != 0;
     } else if (strcmp(name, "log_flush") == 0) {
         sLogFlush = atoi(value) != 0;
+    } else if (strcmp(name, "log_all") == 0) {
+        gPspLogAll = atoi(value) != 0;
     } else if (strcmp(name, "native_fighter") == 0) {
         gPspNativeFighter = atoi(value) != 0;
     } else if (strcmp(name, "gs_fb16") == 0) {
@@ -474,7 +478,10 @@ int __wrap_main(int argc, char **argv) {
     setenv("BT3_SAVES", HOME "/saves", 1);
     setenv("BT3_SETTINGS", HOME "/bt3_settings.txt", 1);
     read_settings();
+    if (gPspLogAll) gPspReport = 1; /* report=0 must not silence log_all */
     gPortWide = gPspWide;
+    Psp_Log("psp: LOG_ALL diagnostics=%d report=%d (incidents summarized every ~2s, no per-draw log writes)\n",
+            gPspLogAll, gPspReport);
 
     Psp_Log("psp: disc folder %s, heap %d MB, report=%d\n",
             gPspDisc, PSP_GAME_HEAP_MB, gPspReport);
