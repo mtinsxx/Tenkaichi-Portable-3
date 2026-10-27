@@ -144,6 +144,7 @@ typedef struct Tex {
 
 typedef struct Target {
     uint32_t fbp;
+    uint32_t psm; /* GS FRAME.PSM which produced this 5551 pixel view */
     void *color, *depth;
     unsigned last;
     uint32_t gen;  /* last GS upload generation when this FBP was rendered */
@@ -731,6 +732,7 @@ static int target_get(uint32_t fbp, int create) {
        current GE list (see the snapshotSampledFrame LRU exclusion). */
     sTargets[slot].snapshotSampledFrame=UINT32_MAX;
     sTargets[slot].fbp = fbp;
+    sTargets[slot].psm = UINT32_MAX;
     sTargets[slot].gen = 0;
     sTargets[slot].rendered = 0;  /* never sample uninitialized backing VRAM */
     sTargets[slot].last = sFrame;
@@ -1581,13 +1583,16 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
         int snapshotReady = 0;
         if (src >= 0) {
             Target *old = &sTargets[src];
+            if(old->rendered &&
+               !PspVram_CanAliasGsPsm(old->psm,tpsm))
+                ++sFbPsmAliasRejected;
             /* A GS memory page can hold a framebuffer at one time and an
                ordinary texture after a host-to-local upload. Do not bind
                stale PSP framebuffer VRAM when the GS upload generation has
                changed. This matches the reference GPU's alias check. */
             if ((tbp & 31u) == 0 && old->rendered &&
                 old->gen == gGsPageGen[old->fbp & 511] &&
-                PspVram_CanAliasIndexed(tpsm) &&
+                PspVram_CanAliasGsPsm(old->psm,tpsm) &&
                 old->fbp != (uint32_t)fbp &&
                 /* Two PS2 display FBPs can share one PSP draw surface,
                    which must never be read as texture while being written. */
@@ -1622,7 +1627,7 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
                 }
             } else if ((tbp & 31u) == 0 &&
                        old->gen==gGsPageGen[old->fbp & 511u] &&
-                       PspVram_CanAliasIndexed(tpsm) &&
+                       PspVram_CanAliasGsPsm(old->psm,tpsm) &&
                        PspGsFb_SampleValid(&old->snapVersion,old->gen) &&
                        old->fbp!=(uint32_t)fbp) {
                 /* The physical WORK surface was reused, but a previous
@@ -1632,7 +1637,7 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
                 ++sFbSnapshotsSampled;
             } else {
                 ++sFbAliasFallback;
-                if (!PspVram_CanAliasIndexed(tpsm)) {
+                if (!PspVram_CanAliasGsPsm(old->psm,tpsm)) {
                     Psp_DiagAllIncident(PSP_DIAG_FB_INDEXED_FORMAT,ctx,tpsm);
                 } else if (old->gen != gGsPageGen[old->fbp & 511]) {
                     ++sFbAliasReupload;
