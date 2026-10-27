@@ -319,12 +319,21 @@ extern int gPspLogAll;
 /* Immutable sample of live GS context, recorded once per incident class. */
 static void Psp_DiagAllIncident(unsigned kind, int ctx, uint32_t detail) {
     PspDiagAllSample s;
-    if (!gPspLogAll) return;
+    if (!gPspLogAll || kind >= PSP_DIAG_COUNT) return;
+    /* Hot geometry and framebuffer queries can occur tens of thousands
+       of times. Build the costly register snapshot only ONCE per kind
+       and interval; subsequent events just update two small counters. */
+    if (sPspLogAll.counts[kind]) {
+        if (sPspLogAll.counts[kind] != UINT32_MAX) ++sPspLogAll.counts[kind];
+        sPspLogAll.lastFrame[kind] = sFrame;
+        return;
+    }
     memset(&s, 0, sizeof(s));
     s.frame=sFrame; s.ctx=ctx; s.detail=detail;
     s.prim=gGs.prim;
     if (ctx>=0 && ctx<=1) {
         s.fbp=(uint32_t)(gGs.frame[ctx] & 0x1FFu);
+        s.framePsm=(uint32_t)((gGs.frame[ctx]>>24)&63u);
         s.zbp=(uint32_t)(gGs.zbuf[ctx] & 0x1FFu);
         s.tex0=gGs.tex0[ctx];
         s.tbp=(uint32_t)((gGs.tex0[ctx] & 0x3FFFu)/32u);
@@ -344,7 +353,7 @@ static void Psp_DiagAllReport(void) {
                 PSP_DIAG_LABELS[i],sPspLogAll.counts[i],s->frame,
                 sPspLogAll.lastFrame[i],s->ctx,s->fbp,s->zbp,s->tbp,
                 (unsigned)((s->tex0>>20)&63u),
-                (unsigned)(s->ctx>=0&&s->ctx<=1 ? (gGs.frame[s->ctx]>>24)&63u : 0u),
+                s->framePsm,
                 (unsigned long long)s->test,(unsigned long long)s->prim,s->detail);
     }
     Psp_Log("psp: LOG_ALL v1 end; non-listed categories had zero observed events. Counts do not prove visible pixel corruption.\n");

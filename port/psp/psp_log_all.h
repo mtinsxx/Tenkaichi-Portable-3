@@ -57,7 +57,7 @@ static const char *const PSP_DIAG_LABELS[PSP_DIAG_COUNT] = {
     "framebuffer-upload-not-implemented"
 };
 typedef struct PspDiagAllSample {
-    uint32_t frame, fbp, zbp, tbp, detail;
+    uint32_t frame, fbp, zbp, tbp, framePsm, detail;
     uint64_t tex0, test, prim;
     int ctx;
 } PspDiagAllSample;
