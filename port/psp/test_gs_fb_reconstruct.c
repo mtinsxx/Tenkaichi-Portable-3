@@ -2,9 +2,19 @@
 #include <stdint.h>
 #include <stdio.h>
 #include "psp_gs_fb_reconstruct.h"
+#include "psp_vram_address.h"
 static int near(float a,float b) {return a>=b-0.0001f && a<=b+0.0001f;}
 int main(void) {
     PspGsFbVersion v={0};
+    {
+        unsigned fb,tex;
+        for(fb=0;fb<64u;fb++)
+            for(tex=0;tex<64u;tex++) {
+                int expected=fb==tex &&
+                    (fb==0u || fb==1u || fb==2u || fb==10u);
+                assert(PspVram_CanAliasGsPsm(fb,tex)==expected);
+            }
+    }
     assert(PSP_GS_FB_SNAPSHOT_BYTES==524288u);
     assert(near(PspGsFb_PhysicalU(512.f),480.f));
     assert(near(PspGsFb_PhysicalV(448.f),272.f));
