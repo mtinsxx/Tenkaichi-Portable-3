@@ -47,6 +47,7 @@
 #include "psp_gs_fb16.h"
 #include "psp_gs_depth_z.h"
 #include "psp_tex_reuse.h"
+#include "psp_tex_lru.h"
 #include "psp_tex_lifetime.h"
 
 #define SCR_W 480
@@ -117,7 +118,8 @@ typedef struct Tex {
     int fmt;                 /* GU_PSM_5551 / GU_PSM_8888 */
     int swizzled;            /* whether this texture uses the PSP's tiled layout */
     int white_sprite;        /* independent white-modulation texture variant */
-    unsigned last;           /* frame last used */
+    unsigned last;           /* frame last used: required for GE fence */
+    uint32_t useTicket;      /* exact intra-frame LRU order, not a GPU fence */
 } Tex;
 
 typedef struct Target {
@@ -133,6 +135,7 @@ static unsigned int __attribute__((aligned(64))) sList[65536];
 static unsigned char *sVram = (unsigned char *)VRAM_BASE;
 static unsigned sTexMem;     /* bytes of TEX_SIZE given out */
 static unsigned sTexRamMem, sTexRamPeak;
+static uint32_t sTexUseTicket;
 /* Reusable decode buffers remove thousands of alloc/free attempts
    and corresponding GPU-fenced cache evictions under battle pressure.
    A/B: texture_scratch=0 in optional bt3.txt. */
@@ -443,7 +446,8 @@ static int tex_evict_one(void) {
     int i, oldest = -1;
     for (i = 0; i < sTexCount; ++i) {
         if (sTex[i].heap_alloc != NULL &&
-            (oldest < 0 || sTex[i].last < sTex[oldest].last)) {
+            (oldest < 0 ||
+             PspTexLru_IsOlder(sTex[i].useTicket,sTex[oldest].useTicket))) {
             oldest = i;
         }
     }
@@ -490,7 +494,9 @@ static void tex_evict(unsigned additionalRamBytes) {
         if (tex_evict_one()) continue;
         if (sTexCount < MAX_TEX) break;
         for (i = 0; i < sTexCount; ++i) {
-            if (oldest < 0 || sTex[i].last < sTex[oldest].last) oldest = i;
+            if (oldest < 0 ||
+                PspTexLru_IsOlder(sTex[i].useTicket,sTex[oldest].useTicket))
+                oldest = i;
         }
         if (oldest < 0) break;
         memmove(&sTex[oldest], &sTex[oldest + 1],
@@ -744,6 +750,7 @@ static void *texture_get(int ctx, unsigned lodCap, int white_sprite,
         if (white_sprite) ++sDiagWhiteTextureHits;
         if (tw != readW || th != readH) ++sLodCacheHits;
         t->last = sFrame;
+        t->useTicket = ++sTexUseTicket;
         *tw_out = (int)t->w;
         *th_out = (int)t->h;
         *fmt_out = t->fmt;
@@ -771,6 +778,7 @@ static void *texture_get(int ctx, unsigned lodCap, int white_sprite,
             if (tw != readW || th != readH) ++sLodCacheHits;
             ++sTexCacheHits;
             sTex[i].last = sFrame;
+            sTex[i].useTicket = ++sTexUseTicket;
             Psp_TexReuseRemember(&sTexReuse[reuseSlot], t0, texa,
                                  gGsPspTextureEpoch, sTexSerial,
                                  lodCap, white_sprite, (unsigned)i);
@@ -947,6 +955,7 @@ static void *texture_get(int ctx, unsigned lodCap, int white_sprite,
         sTexSwizzled = doSwizzle;
         t->bytes = bytes;
         t->last = sFrame;
+        t->useTicket = ++sTexUseTicket;
         sNewTex++;
         if (tw != readW || th != readH) {
             ++sLodReduced;
