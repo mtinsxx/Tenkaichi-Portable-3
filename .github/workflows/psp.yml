@@ -94,6 +94,11 @@ jobs:
           gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_hud_overlay.c -o /tmp/bt3-psp-hud-overlay
           /tmp/bt3-psp-hud-overlay
 
+      - name: Test PSP stage-to-fighter safe GE composition policy
+        run: |
+          gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/psp port/psp/test_stage_compose.c -o /tmp/tp3-stage-compose
+          /tmp/tp3-stage-compose
+
       - name: Test PSP paired display FBP routing and work isolation
         run: |
           gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_scene_pair.c -o /tmp/bt3-psp-scene-pair
