@@ -327,6 +327,7 @@ static unsigned sFbSnapshotAllocs, sFbSnapshotBudgetSkip;
 static unsigned sFbAliasHit, sFbAliasFallback, sFbAliasReupload;
 static unsigned sFbAliasUnrendered, sFbAliasSelf, sFbWorkOwnerChanges;
 static unsigned sFbPsmAliasRejected, sGsAfailSecondPass, sGsAfailHudFallback;
+static unsigned sGsUploadSnapshot, sGsUploadUnsupported;
 static unsigned sTargetRebindInvalid, sTargetScreenCleared;
 extern int gPspTargetFreshness;
 extern int gGsMainFbp; /* gs_sony.c: the frame buffer the frame is drawn into */
@@ -2496,20 +2497,34 @@ void GsGpu_DrawVu6(int ctx, const float *vertices, uint32_t count,
     }
 }
 
-/* The game is about to fill a frame buffer from the processor (the fades: the shown picture read back and put
-   into two buffers). What it will hold is the picture on the screen, so that is what is put there. */
+/* Called BEFORE a CPU host-to-GS upload overwrites either of the two
+   512x448 GS display pages (0 and 0x70). Preserve a previously rendered
+   PSP screen if a matching logical FBP is already tracked. Use the
+   EXISTING 1.5 MiB virtual-framebuffer snapshot pool and its GE fences;
+   never allocate another dedicated capture, or read an unsynchronized
+   framebuffer with the CPU. This only preserves RGB5551 pixels and is
+   not a PSMCT32 writeback into the swizzled GS 4 MiB memory. */
 void GsGpu_FbUpload(int second) {
-    if (!sReady) {
-        return;
+    const uint32_t fbp = second ? 0x70u : 0u;
+    unsigned i;
+    if (!sReady) return;
+    flush(); /* ensure preceding PSP draws are queued before the copy */
+    for (i=0u;i<MAX_TARGETS;i++) {
+        Target *t=&sTargets[i];
+        if(!t->used || t->fbp!=fbp)continue;
+        if(t->rendered && t->gen==gGsPageGen[fbp&511u] &&
+           (PspGsFb_SampleValid(&t->snapVersion,t->gen) ||
+            snapshot_target((int)i))) {
+            ++sGsUploadSnapshot;
+            return;
+        }
+        break;
     }
-    /* The original GS path reads back framebuffer pixels to an image
-       that is later used in fade/effects passes. PSP currently has NO
-       equivalent readback/copy here: flush() only submits queued draws.
-       Log reachability without claiming the effect has been ported. */
+    /* GS upload itself still uses gs_core.c VRAM. If no coherent GE
+       image exists, don't claim the framebuffer was reconstructed. */
+    ++sGsUploadUnsupported;
     ++sDiagUnimplementedFbUpload;
     Psp_DiagAllIncident(PSP_DIAG_FB_UPLOAD_UNSUPPORTED,-1,(unsigned)second);
-    flush();
-    (void)second;
 }
 
 void GsGpu_Native(int effect) {
@@ -3013,6 +3028,9 @@ void Psp_GuStats(unsigned out[4]) {
     sTexEvictAfterFrame = sTexEvictSameFrame = 0;
     sTexEvictFenceUs = 0;
     sScratchRgbaUses = sScratchIndicesUses = 0;
+    Psp_Log("psp: GS pre-upload FBP capture: saved-or-current=%u unsupported=%u (uses existing 1.5MiB pool, 5551 not GS RGBA32)\n",
+            sGsUploadSnapshot,sGsUploadUnsupported);
+    sGsUploadSnapshot=sGsUploadUnsupported=0;
     Psp_Log("psp: GS AFAIL pass: replays=%u HUD-stencil-legacy=%u; cross-PSM framebuffer aliases rejected=%u (5551 cannot encode swizzled/32-bit destination)\n",
             sGsAfailSecondPass, sGsAfailHudFallback, sFbPsmAliasRejected);
     sGsAfailSecondPass=sGsAfailHudFallback=sFbPsmAliasRejected=0;
