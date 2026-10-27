@@ -1495,11 +1495,10 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
             return;
         }
     }
-    /* GS frame PSMCT16 colour pixels have the same 5551 channel layout
-       as PSP GU_PSM_5551. Direct output is now supported only for PSM
-       0x02 and only when colour does NOT alias the depth page.
-       The PS2 16S swizzle, framebuffer readbacks and depth-as-texture
-       are still unsupported and must use the previous skip path. */
+    /* Both GS PSMCT16 and PSMCT16S use the same pixel bit layout as
+       GU_PSM_5551, so direct 5551 rasterization is safe if depth does
+       not share the colour page. The different PS2 16S VRAM swizzle,
+       framebuffer rereads and depth-as-texture are NOT implemented. */
     {
         uint32_t framePsm = (uint32_t)((frame >> 24) & 0x3Fu);
         int is16 = Gs_PsmBits(framePsm) == 16;
@@ -2781,7 +2780,7 @@ void Psp_GuStats(unsigned out[4]) {
     Psp_Log("psp: architecture gaps: unimplemented-fb-readbacks=%u native-effects=%u (no pixels copied for FB readback)\n",
             sDiagUnimplementedFbUpload, sDiagUnimplementedNativeEffect);
     sDiagUnimplementedFbUpload = sDiagUnimplementedNativeEffect = 0;
-    Psp_Log("psp: GS PSMCT16 colour output: native=%u legacy-skipped=%u option=%d (16S/depth still unsupported)\n",
+    Psp_Log("psp: GS PSMCT16/16S direct colour: native=%u legacy-skipped=%u option=%d (depth-texture/GS-VRAM swizzle still unsupported)\n",
             sDiagFb16Native, sDiagSkip16, gPspGsFb16);
     sDiagFb16Native = 0;
     Psp_Log("psp: GS source scissor culling: empty=%u fully-outside=%u (before texture cache/GE)\n",
