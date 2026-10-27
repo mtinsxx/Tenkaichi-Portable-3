@@ -2,7 +2,9 @@
 #define BT3_PSP_GPU_PROBE_H
 #include <stdint.h>
 /* CPU probes of completed PSP GE framebuffer contents. Caller must
-   first finish and sync GE, and pass uncached VRAM (0x04000000).
+   first finish and sync GE, and pass uncached VRAM (0x44000000).
+   On PPSSPP, GPU host framebuffer writes may still be deferred from
+   emulated CPU memory; all-zero results are NOT proof of black GPU pixels.
    Sample the same spatial 16x12 grid of 480x272 5551 pixels from
    screen + two 512-stride WORK surfaces. This measures actual pixels,
    rather than only successful GS/GU draw submissions.

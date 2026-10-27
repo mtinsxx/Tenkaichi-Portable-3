@@ -121,6 +121,13 @@ jobs:
           set -euo pipefail
           python3 port/psp/test_log_guard.py
 
+      - name: Test PSP uncached VRAM and indexed GS texture alias safety
+        run: |
+          set -euo pipefail
+          gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/psp \
+            port/psp/test_vram_address.c -o /tmp/tp3-vram-address
+          /tmp/tp3-vram-address
+
       - name: Compile PSP EBOOT using official pspdev SDK
         run: |
           set -euo pipefail

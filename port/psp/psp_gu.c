@@ -49,6 +49,7 @@
 #include "psp_tex_reuse.h"
 #include "psp_tex_lru.h"
 #include "psp_gpu_probe.h"
+#include "psp_vram_address.h"
 #include "psp_tex_lifetime.h"
 
 #define SCR_W 480
@@ -58,7 +59,11 @@
 #define DEPTH_SIZE (BUF_W * SCR_H * 2)
 
 /* Where everything sits in the PSP's graphics memory (2 MB). */
-#define VRAM_BASE ((void *)0x04000000u) /* uncached (the processor reads it back for the fades) */
+/* All PSP CPU VRAM reads/writes use the uncached 0x44000000 mirror.
+ * 0x04000000 is the cached mirror: reading it after GE sync can
+ * return stale CPU cache lines; writes may later overwrite GE pixels.
+ * This also fixes initial clears and VRAM texture uploads to GE. */
+#define VRAM_BASE ((void *)(uintptr_t)PSP_VRAM_UNCACHED_BASE)
 #define FB0_OFF 0
 #define FB1_OFF FB_SIZE
 #define DEPTH_OFF (2 * FB_SIZE)
@@ -1352,6 +1357,7 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
                changed. This matches the reference GPU's alias check. */
             if ((tbp & 31u) == 0 && old->rendered &&
                 old->gen == gGsPageGen[old->fbp & 511] &&
+                PspVram_CanAliasIndexed(tpsm) &&
                 old->fbp != (uint32_t)fbp &&
                 /* Two PS2 display FBPs can share one PSP draw surface,
                    which must never be read as texture while being written. */
@@ -1365,7 +1371,9 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
                 Psp_DiagAllIncident(PSP_DIAG_FB_ALIAS_VALID,ctx,tbp);
             } else {
                 ++sFbAliasFallback;
-                if (old->gen != gGsPageGen[old->fbp & 511]) {
+                if (!PspVram_CanAliasIndexed(tpsm)) {
+                    Psp_DiagAllIncident(PSP_DIAG_FB_INDEXED_FORMAT,ctx,tpsm);
+                } else if (old->gen != gGsPageGen[old->fbp & 511]) {
                     ++sFbAliasReupload;
                     Psp_DiagAllIncident(PSP_DIAG_FB_INVALID_GENERATION,ctx,old->fbp);
                 } else if (!old->rendered) {
