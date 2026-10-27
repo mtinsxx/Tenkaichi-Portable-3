@@ -147,6 +147,13 @@ jobs:
           set -euo pipefail
           python3 port/psp/test_gs_color_lifetime.py
 
+      - name: Test PS2 GS scissor translation and pre-decode culling
+        run: |
+          set -euo pipefail
+          gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/psp \
+            port/psp/test_gs_scissor.c -lm -o /tmp/tp3-gs-scissor
+          /tmp/tp3-gs-scissor
+
       - name: Compile PSP EBOOT using official pspdev SDK
         run: |
           set -euo pipefail

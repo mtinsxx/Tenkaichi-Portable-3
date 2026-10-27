@@ -47,6 +47,7 @@
 #include "psp_fighter_vu1.h"
 #include "psp_gs_fb16.h"
 #include "psp_gs_depth_z.h"
+#include "psp_gs_scissor.h"
 #include "psp_tex_reuse.h"
 #include "psp_tex_lru.h"
 #include "psp_t8_native.h"
@@ -183,6 +184,7 @@ static int sReady;
 static unsigned sFrame;
 static PspDiagAll sPspLogAll;
 static unsigned sDraws, sSkipped, sNewTex, sBatches;
+static unsigned sGsEmptyClipRejects, sGsPrimitiveClipRejects;
 /* PSP-native stage (VU1 program 4), without replacing the game/GS logic. */
 static PspStage4Vertex sStage4Prepared[1024];
 static PspStageClipVertex sStage4ClipSource[1024];
@@ -1189,7 +1191,11 @@ static void state_apply(void) {
             sceGuScissor(x0, y0, x1, y1);
             sceGuEnable(GU_SCISSOR_TEST);
         } else {
-            sceGuDisable(GU_SCISSOR_TEST);
+            /* Never disable clipping when the GS scissor has zero
+               intersection with the PSP display! An empty region must
+               remain empty, not turn into full-screen rendering. */
+            sceGuScissor(0, 0, 0, 0);
+            sceGuEnable(GU_SCISSOR_TEST);
         }
     }
 
@@ -1400,6 +1406,27 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
         return;
     }
     sDraws++;
+    /* Reject GS pixels with no possible scissor coverage before doing
+       expensive texture decode, framebuffer aliasing or GE state setup.
+       This affects stage, fighter, menu and HUD alike. Do not reject
+       nonfinite/ambiguous geometry; the legacy path handles that. */
+    if (PspGs_ScissorViewportEmpty(sc)) {
+        ++sGsEmptyClipRejects;
+        ++sSkipped;
+        return;
+    }
+    {
+        float clipXY[6];
+        for (i=0;i<n;i++) {
+            clipXY[2*i]=v[i].x;
+            clipXY[2*i+1]=v[i].y;
+        }
+        if (PspGs_ScissorReject(sc,clipXY,(unsigned)n)) {
+            ++sGsPrimitiveClipRejects;
+            ++sSkipped;
+            return;
+        }
+    }
     /* GS frame PSMCT16 colour pixels have the same 5551 channel layout
        as PSP GU_PSM_5551. Direct output is now supported only for PSM
        0x02 and only when colour does NOT alias the depth page.
@@ -2590,6 +2617,9 @@ void Psp_GuStats(unsigned out[4]) {
     Psp_Log("psp: GS PSMCT16 colour output: native=%u legacy-skipped=%u option=%d (16S/depth still unsupported)\n",
             sDiagFb16Native, sDiagSkip16, gPspGsFb16);
     sDiagFb16Native = 0;
+    Psp_Log("psp: GS source scissor culling: empty=%u fully-outside=%u (before texture cache/GE)\n",
+            sGsEmptyClipRejects,sGsPrimitiveClipRejects);
+    sGsEmptyClipRejects=sGsPrimitiveClipRejects=0;
     Psp_Log("psp: GS menu passes: screen=%u work=%u skipped_fb16=%u skipped_depth=%u skipped_special_texture=%u missing_texture=%u no_target=%u\n",
             sDiagDrawMain, sDiagDrawWork, sDiagSkip16, sDiagSkipDepth,
             sDiagSkipPsm, sDiagSkipTexMem, sDiagSkipNoTarget);
