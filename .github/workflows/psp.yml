@@ -74,6 +74,11 @@ jobs:
           gcc -std=c99 -Wall -Wextra -Werror -O2 port/psp/test_fighter_vu1.c -o /tmp/bt3-psp-fighter-vu1
           /tmp/bt3-psp-fighter-vu1
 
+      - name: Test PS2 GS AFAIL inverse comparator and channel-write policy
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_gs_afail.c -o /tmp/tp3-gs-afail
+          /tmp/tp3-gs-afail
+
       - name: Test PSP GS PSMCT16 colour framebuffer translation
         run: |
           gcc -std=c99 -Wall -Wextra -Werror -O2 port/psp/test_gs_fb16.c -o /tmp/bt3-psp-fb16
