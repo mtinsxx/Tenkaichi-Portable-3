@@ -2413,9 +2413,16 @@ void GsGpu_FrameEnd(void) {
     sceGuPixelMask(0);
     sceGuScissor(0, 0, SCR_W, SCR_H);
     sceGuEnable(GU_SCISSOR_TEST);
-    sceGuClearColor(0);
+    /* Do NOT impose a black colour clear on every PSP frame: the PS2
+       explicitly submits its own per-frame clear sprite via
+       sceGsSwapDBuff -> GIF -> GsGpu_Draw.  The unconditional GU clear
+       erased persistent stage backgrounds whenever a game frame only
+       submitted fighters/effects. Both PSP display buffers are already
+       initialized to black ONCE during Psp_GuInit. Keep the depth clear
+       as a separate safeguard for PSP's single shared Z buffer.
+       The normal GS sprites still clear colour when requested. */
     sceGuClearDepth(0);
-    sceGuClear(GU_COLOR_BUFFER_BIT | GU_DEPTH_BUFFER_BIT);
+    sceGuClear(GU_DEPTH_BUFFER_BIT);
     memset(&sSt, 0, sizeof(sSt));
     sAppliedValid = 0; /* previous list included clear / optional movie */
     gPspGuFlushes++;
@@ -2434,6 +2441,7 @@ int Psp_GuInit(void) {
     memset(sVram + WORK_OFF, 0, WORK_SIZE);
     memset(sVram + WORK2_OFF, 0, WORK2_SIZE);
     Psp_Log("psp: startup VRAM clean: both screen buffers and work target cleared (one-time)\n");
+    Psp_Log("psp: GS-native screen colour lifetime: frame-start GU color clear disabled; Sony GIF clear sprites kept; depth clear kept\n");
     Psp_Log("psp: GS depth Z24->Z16 direct conversion active [depth-z16-20261026]\n");
     Psp_Log("psp: guarded texture reuse [texepoch-20261026] enabled\n");
     Psp_Log("psp: GS compositor frame/swap trace [frame-composition-20261026], swap_from_sdk=%d\n",

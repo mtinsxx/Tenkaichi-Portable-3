@@ -142,6 +142,11 @@ jobs:
             port/psp/test_shadow6.c -lm -o /tmp/tp3-shadow6
           /tmp/tp3-shadow6
 
+      - name: Test PS2 frame colour lifetime on PSP
+        run: |
+          set -euo pipefail
+          python3 port/psp/test_gs_color_lifetime.py
+
       - name: Compile PSP EBOOT using official pspdev SDK
         run: |
           set -euo pipefail
