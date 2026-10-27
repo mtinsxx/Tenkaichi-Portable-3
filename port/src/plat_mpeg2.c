@@ -29,6 +29,7 @@
 #include <string.h>
 #ifdef PORT_PSP
 #include "psp_movie_5551.h"
+#include "psp_mpeg_quant.h"
 #endif
 
 typedef struct Mpeg2 {
@@ -49,6 +50,9 @@ typedef struct Mpeg2 {
     /* sequence */
     int width, height, mbw, mbh;
     uint8_t intraMatrix[64]; /* by position in the block (it is transmitted in zigzag order) */
+#ifdef PORT_PSP
+    uint16_t quantMul[64]; /* recomputed when slice qscale changes */
+#endif
     /* picture */
     int pictureType, dcPrecision, qScaleType, intraVlc, altScan, pictureStructure, framePredFrameDct;
     uint8_t *y, *cb, *cr;
@@ -332,7 +336,11 @@ static int block(Mpeg2 *m, int chroma, int *dcPred, int qscale, uint8_t *dst, in
             return 0;
         }
         pos = scan[i];
+#ifdef PORT_PSP
+        v = PspMpegQuant_Apply(level,m->quantMul[pos]);
+#else
         v = (2 * level * m->intraMatrix[pos] * qscale) / 32;
+#endif
         if (v > 2047) {
             v = 2047 + sign; /* -2048 is allowed */
         }
@@ -385,6 +393,9 @@ static void slice(Mpeg2 *m, int row) {
         }
     }
     qscale = m->qScaleType ? kNonLinearScale[code] : code * 2;
+#ifdef PORT_PSP
+    PspMpegQuant_Build(m->quantMul,m->intraMatrix,(unsigned)qscale);
+#endif
     dc[0] = dc[1] = dc[2] = 1 << (7 + m->dcPrecision);
     for (;;) {
         int inc = 0;
@@ -419,6 +430,9 @@ static void slice(Mpeg2 *m, int row) {
             }
             code = (int)get(m, 5);
             qscale = m->qScaleType ? kNonLinearScale[code] : code * 2;
+#ifdef PORT_PSP
+            PspMpegQuant_Build(m->quantMul,m->intraMatrix,(unsigned)qscale);
+#endif
         }
         if (!m->framePredFrameDct) {
             skip(m, 1); /* dct_type: frame or field DCT. Field DCT is not handled (never present here) */

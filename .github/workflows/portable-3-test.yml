@@ -109,6 +109,13 @@ jobs:
             port/psp/test_gpu_probe.c -o /tmp/tp3-gpu-probe
           /tmp/tp3-gpu-probe
 
+      - name: Test PSP MPEG-2 quantization exact arithmetic parity
+        run: |
+          set -euo pipefail
+          gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/psp \
+            port/psp/test_mpeg_quant.c -o /tmp/tp3-mpeg-quant
+          /tmp/tp3-mpeg-quant
+
       - name: Compile PSP EBOOT using official pspdev SDK
         run: |
           set -euo pipefail
