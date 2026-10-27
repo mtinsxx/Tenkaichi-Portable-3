@@ -128,6 +128,7 @@ typedef struct Tex {
     int white_sprite;        /* independent white-modulation texture variant */
     unsigned last;           /* frame last used: required for GE fence */
     uint32_t useTicket;      /* exact intra-frame LRU order, not a GPU fence */
+    uint32_t clutTicket;     /* forces PSP CLUT reload after palette-pointer reuse */
 } Tex;
 
 typedef struct Target {
@@ -166,6 +167,7 @@ static unsigned sTexPressureEvictions, sTexRecoveredAllocations;
 static unsigned sTexScratchFailures, sTexScratchRecovered;
 static int sTexSwizzled;     /* layout of the last cache-hit/new texture */
 static void *sTexClut;      /* T8 CLUT attached to the last cache hit/miss */
+static uint32_t sTexClutTicket, sClutTicketNext;
 static unsigned sT8NativeNew, sT8NativeHits, sT8NativeSaved;
 static Tex sTex[MAX_TEX];
 static int sTexCount;
@@ -386,6 +388,7 @@ static void Psp_DiagAllReport(void) {
 /* ---- the state the engine is in (only what changed is sent again) ---- */
 static struct {
     void *tex, *clut;
+    uint32_t clutTicket;
     int tw, th, fmt, tmode;
     int tfx, tcc, wrapu, wrapv, filt;
     int blendop, src, dst, sfix, dfix, blend_on;
@@ -770,6 +773,7 @@ static void *texture_get(int ctx, unsigned lodCap, int white_sprite,
         *fmt_out = t->fmt;
         sTexSwizzled = t->swizzled;
         sTexClut = t->clut;
+        sTexClutTicket = t->clutTicket;
         if (t->clut) ++sT8NativeHits;
         if (sampleKey) {
             sProfKeySampleUs += Psp_TimeUs() - keyStartUs;
@@ -806,6 +810,7 @@ static void *texture_get(int ctx, unsigned lodCap, int white_sprite,
             *fmt_out = sTex[i].fmt;
             sTexSwizzled = sTex[i].swizzled;
             sTexClut = sTex[i].clut;
+            sTexClutTicket = sTex[i].clutTicket;
             if (sTexClut) ++sT8NativeHits;
             if (sampleKey) {
                 sProfKeySampleUs += Psp_TimeUs() - keyStartUs;
@@ -874,7 +879,9 @@ static void *texture_get(int ctx, unsigned lodCap, int white_sprite,
         t->fmt=GU_PSM_T8; t->swizzled=tiled;
         t->white_sprite=0; t->last=sFrame;
         t->useTicket=++sTexUseTicket;
+        t->clutTicket=++sClutTicketNext;
         sTexSwizzled=tiled; sTexClut=palette;
+        sTexClutTicket=t->clutTicket;
         ++sNewTex; ++sT8NativeNew;
         sT8NativeSaved += (tw*th*2u > allocated) ?
                           tw*th*2u-allocated : 0u;
@@ -1036,6 +1043,8 @@ static void *texture_get(int ctx, unsigned lodCap, int white_sprite,
         t->heap_alloc = heap_alloc;
         t->clut = NULL;
         sTexClut = NULL;
+        t->clutTicket = 0;
+        sTexClutTicket = 0;
         t->w = tw;
         t->h = th;
         t->fmt = fmt;
@@ -1183,7 +1192,8 @@ static void state_apply(void) {
             sSt.tmode != p->tmode) {
             sceGuTexMode(sSt.fmt, 0, 0, sSt.tmode);
         }
-        if (sSt.clut && (first || p->clut != sSt.clut)) {
+        if (sSt.clut && (first || p->clut != sSt.clut ||
+                         p->clutTicket != sSt.clutTicket)) {
             /* PSP CLUT loads eight colors per block: 32 blocks = 256.
                Palette and index pixels are in one cache-owned allocation.
                No palette is reused after its texture is evicted. */
@@ -1511,6 +1521,7 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
                pitch is 512 and PSP textures require power-of-two dimensions. */
             texIsTarget = 1;
             sTexClut = NULL;
+            sTexClutTicket = 0;
             tex = sTargets[src].color;
             tw = 512;
             th = 256;
@@ -1676,6 +1687,7 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
 
         memset(&n, 0, sizeof(n));
         n.tex = tex; n.clut = tme && !texIsTarget ? sTexClut : NULL;
+        n.clutTicket = n.clut ? sTexClutTicket : 0u;
         n.tw = tw; n.th = th; n.fmt = fmt;
         n.target = sTargets[targetIndex].color;
         n.tmode = texIsTarget ? 0 : sTexSwizzled;
