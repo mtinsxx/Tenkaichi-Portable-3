@@ -53,6 +53,7 @@
 #include "psp_gs_frame_mask.h"
 #include "psp_gs_afail.h"
 #include "psp_gs_fb_reconstruct.h"
+#include "psp_stage_compose.h"
 #include "psp_tex_reuse.h"
 #include "psp_tex_lru.h"
 #include "psp_t8_native.h"
@@ -328,6 +329,7 @@ static unsigned sFbAliasHit, sFbAliasFallback, sFbAliasReupload;
 static unsigned sFbAliasUnrendered, sFbAliasSelf, sFbWorkOwnerChanges;
 static unsigned sFbPsmAliasRejected, sGsAfailSecondPass, sGsAfailHudFallback;
 static unsigned sGsUploadSnapshot, sGsUploadUnsupported;
+static unsigned sStageCompositions, sStageComposeRejected, sStageTagged;
 static unsigned sTargetRebindInvalid, sTargetScreenCleared;
 extern int gPspTargetFreshness;
 extern int gGsMainFbp; /* gs_sony.c: the frame buffer the frame is drawn into */
@@ -2106,6 +2108,87 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
     }
 }
 
+/* A stage and its 3D actors can target different logical GS FBPs.
+   Remember only REAL accepted native stage rasterization, and transfer
+   it to the fighter's PSP screen target *before* the fighter's first
+   triangles. Keep the original GS target routing/snapshots intact. */
+static struct {
+    unsigned frame, written;
+    uint32_t fbp, gen;
+    uintptr_t backing;
+    int valid;
+} sStageImage;
+static unsigned sStageComposeFrame = UINT32_MAX;
+static uintptr_t sStageComposeDest;
+
+static void Psp_StageRecordDraw(int ctx) {
+    uint32_t fbp;
+    unsigned i;
+    if (ctx < 0 || ctx > 1 || !sSt.target) return;
+    fbp = (uint32_t)(gGs.frame[ctx] & 0x1FFu);
+    for (i=0u; i<MAX_TARGETS; ++i) {
+        Target *t=&sTargets[i];
+        if (t->used && t->fbp==fbp && t->rendered &&
+            t->color==sSt.target && t->snapVersion.written) {
+            sStageImage.frame=sFrame;
+            sStageImage.written=t->snapVersion.written;
+            sStageImage.fbp=fbp;
+            sStageImage.gen=t->gen;
+            sStageImage.backing=(uintptr_t)t->color;
+            sStageImage.valid=1;
+            ++sStageTagged;
+            return;
+        }
+    }
+}
+
+static void Psp_StageComposeBeforeFighter(int ctx) {
+    uintptr_t dst,src;
+    unsigned i;
+    int sourceReady=0,ownerValid=1,screenDest,already;
+    if (!sStageImage.valid || ctx<0 || ctx>1) return;
+    dst=(uintptr_t)target_color((uint32_t)(gGs.frame[ctx]&0x1FFu));
+    src=sStageImage.backing;
+    screenDest = dst==(uintptr_t)(sVram+FB0_OFF) ||
+                 dst==(uintptr_t)(sVram+FB1_OFF);
+    already=sStageComposeFrame==sFrame && sStageComposeDest==dst;
+    /* The physical WORK slot can be reassigned to another logical GS
+       target; never copy if the stage no longer owns that backing. */
+    if(src==(uintptr_t)(sVram+WORK_OFF) ||
+       src==(uintptr_t)(sVram+WORK2_OFF)) {
+        int slot=psp_work_slot((void *)src);
+        ownerValid = slot>=0 &&
+                     sWorkOwnerFbp[slot]==sStageImage.fbp;
+    }
+    for(i=0u;i<MAX_TARGETS;i++) {
+        const Target *t=&sTargets[i];
+        if(t->used && t->fbp==sStageImage.fbp &&
+           (uintptr_t)t->color==src && t->rendered &&
+           t->gen==sStageImage.gen &&
+           t->snapVersion.written==sStageImage.written) {
+            sourceReady=1;
+            break;
+        }
+    }
+    if(!PspStageCompose_ShouldCopy(sFrame,sStageImage.frame,
+        sourceReady ? sStageImage.written : 0u,sStageImage.written,
+        src,dst,screenDest,sourceReady,ownerValid,already)) {
+        ++sStageComposeRejected;
+        return;
+    }
+    /* One ordered GE copy of 480x272 5551 pixels, never a CPU loop.
+       Flush pending GS triangles before the copy; subsequent fighter
+       geometry remains on dst and appears in front of this background.
+       No copying to a render target currently aliased to the source. */
+    flush();
+    sceGuCopyImage(GU_PSM_5551,0,0,SCR_W,SCR_H,BUF_W,(void *)src,
+                   0,0,BUF_W,(void *)dst);
+    sceGuTexFlush();
+    sStageComposeFrame=sFrame;
+    sStageComposeDest=dst;
+    ++sStageCompositions;
+}
+
 /* Reused by the stage and fighter native VU1 renderers. Defined after
    the fighter adapter to preserve the original GS->GU dispatch order. */
 typedef struct PspStageFastBatch {
@@ -2158,6 +2241,9 @@ void GsGpu_DrawVu0(int layer, int ctx, const float *vertices,
     if (!gPspNativeFighter || !consts ||
         sFighterPreparedCount != count || ctx < 0 || ctx > 1 ||
         (isCel && sFighterPreparedFade != (layer == 5))) return;
+    /* Copy a recent stage from another physical buffer before the
+       first native fighter strip, never after its geometry or HUD. */
+    Psp_StageComposeBeforeFighter(ctx);
     ox = (float)(gGs.xyoffset[ctx] & 0xFFFFu) / 16.0f;
     oy = (float)((gGs.xyoffset[ctx] >> 32) & 0xFFFFu) / 16.0f;
     r = PspStage4_Color(consts[(isCel ? 23u : 22u)*4u]);
@@ -2363,6 +2449,8 @@ static void Psp_NativeEmitTriangle(PspStageFastBatch *b, int ctx,
         unsigned skipped = sSkipped, draws = sDraws;
         int i, alias = 0;
         GsGpu_Draw(3, ctx, tri);
+        if (!fighter && sSkipped==skipped && sDraws==draws+1u)
+            Psp_StageRecordDraw(ctx);
         if (sSkipped != skipped &&
             PspGsStripSkip_MaySkip(sLastDrawStaticSkip)) {
             PspGsStripSkip_Set(&b->stableSkip,sLastDrawStaticSkip);
@@ -3035,6 +3123,9 @@ void Psp_GuStats(unsigned out[4]) {
     Psp_Log("psp: GS AFAIL pass: replays=%u HUD-stencil-legacy=%u; cross-PSM framebuffer aliases rejected=%u (5551 cannot encode swizzled/32-bit destination)\n",
             sGsAfailSecondPass, sGsAfailHudFallback, sFbPsmAliasRejected);
     sGsAfailSecondPass=sGsAfailHudFallback=sFbPsmAliasRejected=0;
+    Psp_Log("psp: stage-to-fighter background copy: staged=%u copied=%u guarded-skip=%u (native VU1, same/previous frame, GE 5551)\n",
+            sStageTagged,sStageCompositions,sStageComposeRejected);
+    sStageTagged=sStageCompositions=sStageComposeRejected=0;
     Psp_Log("psp: fb-alias: valid=%u fallback=%u reupload=%u unrendered=%u self=%u scratch-owner-changes=%u\n",
             sFbAliasHit, sFbAliasFallback, sFbAliasReupload,
             sFbAliasUnrendered, sFbAliasSelf, sFbWorkOwnerChanges);
