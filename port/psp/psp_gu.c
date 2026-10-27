@@ -101,6 +101,7 @@ typedef struct Vtx {         /* what the engine reads: texture coordinates, colo
 } Vtx;
 
 #include "psp_stage_tri_batch.h"
+#include "psp_target_lifetime.h"
 
 typedef struct Tex {
     uint64_t tex0, texa;
@@ -150,7 +151,7 @@ static unsigned sTexScratchFailures, sTexScratchRecovered;
 static int sTexSwizzled;     /* layout of the last cache-hit/new texture */
 static Tex sTex[MAX_TEX];
 static int sTexCount;
-static PspTexReuse sTexReuse[8];
+static PspTexReuse sTexReuse[PSP_TEX_REUSE_SLOTS];
 static uint32_t sTexSerial = 1u;
 static unsigned sTexReuseHits, sTexReuseFullKeys;
 static Target sTargets[MAX_TARGETS];
@@ -267,6 +268,8 @@ static unsigned sTargetsRegistered;
 static uint32_t sWorkOwnerFbp = UINT32_MAX;
 static unsigned sFbAliasHit, sFbAliasFallback, sFbAliasReupload;
 static unsigned sFbAliasUnrendered, sFbAliasSelf, sFbWorkOwnerChanges;
+static unsigned sTargetRebindInvalid, sTargetScreenCleared;
+extern int gPspTargetFreshness;
 extern int gGsMainFbp; /* gs_sony.c: the frame buffer the frame is drawn into */
 extern int gGsDisplayOtherFbp; /* libgraph's paired SCREEN buffer */
 extern int gPspScenePairScreen;
@@ -517,8 +520,15 @@ static int target_get(uint32_t fbp, int create) {
 
     for (i = 0; i < MAX_TARGETS; i++) {
         if (sTargets[i].used && sTargets[i].fbp == fbp) {
+            void *nextBacking = target_color(fbp);
+            if (gPspTargetFreshness && sTargets[i].rendered &&
+                !PspTarget_RebindStillRendered(sTargets[i].rendered,
+                                               sTargets[i].color, nextBacking)) {
+                sTargets[i].rendered = 0;
+                ++sTargetRebindInvalid;
+            }
             sTargets[i].last = sFrame;
-            sTargets[i].color = target_color(fbp);
+            sTargets[i].color = nextBacking;
             return i;
         }
     }
@@ -2065,6 +2075,19 @@ void GsGpu_FrameEnd(void) {
         }
     }
     sFrame++;
+    /* Screen backing is about to be cleared; WORK is not cleared. */
+    if (gPspTargetFreshness) {
+        int i;
+        for (i = 0; i < MAX_TARGETS; ++i) {
+            if (sTargets[i].used && sTargets[i].rendered &&
+                !PspTarget_KeepAfterScreenClear(sTargets[i].rendered,
+                                                 sTargets[i].color,
+                                                 sVram + WORK_OFF)) {
+                sTargets[i].rendered = 0;
+                ++sTargetScreenCleared;
+            }
+        }
+    }
     sceGuStart(GU_DIRECT, sList);
     /* The previous list may have ended on a limited GS scissor.
        Clear must cover the ENTIRE next draw buffer, not only that
@@ -2417,4 +2440,7 @@ void Psp_GuStats(unsigned out[4]) {
     Psp_Log("psp: fb-alias: valid=%u fallback=%u reupload=%u unrendered=%u self=%u scratch-owner-changes=%u\n",
             sFbAliasHit, sFbAliasFallback, sFbAliasReupload,
             sFbAliasUnrendered, sFbAliasSelf, sFbWorkOwnerChanges);
+    Psp_Log("psp: TARGET freshness=%d invalid-rebind=%u invalid-screen-clear=%u per interval\n",
+            gPspTargetFreshness, sTargetRebindInvalid, sTargetScreenCleared);
+    sTargetRebindInvalid = sTargetScreenCleared = 0;
 }

@@ -1,6 +1,8 @@
 #ifndef BT3_PSP_TEX_REUSE_H
 #define BT3_PSP_TEX_REUSE_H
 #include <stdint.h>
+/* More direct-mapped hot keys; full-key+epoch+serial guards are unchanged. */
+#define PSP_TEX_REUSE_SLOTS 128u
 typedef struct PspTexReuse {
     uint64_t tex0, texa;
     uint32_t epoch, serial;
@@ -13,7 +15,7 @@ static inline unsigned Psp_TexReuseSlot(uint64_t tex0, uint64_t texa,
                  (uint32_t)texa ^ (uint32_t)(texa >> 32) ^
                  (lodCap * 0x9e3779b1u) ^ (unsigned)whiteSprite;
     h ^= h >> 16;
-    return (unsigned)(h & 7u);
+    return (unsigned)(h & (PSP_TEX_REUSE_SLOTS - 1u));
 }
 static inline int Psp_TexReuseMatches(const PspTexReuse *e,
                                       uint64_t tex0, uint64_t texa,

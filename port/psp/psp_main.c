@@ -63,6 +63,8 @@ int gPspSwapFromSdk = 1;
 /* Stage/display experiment, not texture or VU1 changes.
    scene_pair_screen=0 restores the historical routing. */
 int gPspScenePairScreen = 1;
+/* Clear stale physical framebuffer aliases after GU swaps. */
+int gPspTargetFreshness = 1;
 /* Experimental top battle HUD sprite depth isolation. PSP uses one Z buffer
    for multiple GS FBPs; 2D overlay must not be occluded by 3D writes.
    hud_top_overlay=0 restores the exact old draw/depth behaviour. */
@@ -312,6 +314,8 @@ static void setting(const char *name, const char *value) {
         gPspSwapFromSdk = atoi(value) != 0;
     } else if (strcmp(name, "scene_pair_screen") == 0) {
         gPspScenePairScreen = atoi(value) != 0;
+    } else if (strcmp(name, "target_freshness") == 0) {
+        gPspTargetFreshness = atoi(value) != 0;
     } else if (strcmp(name, "hud_top_overlay") == 0) {
         gPspHudTopOverlay = atoi(value) != 0;
     } else if (strcmp(name, "hud_mask_fix") == 0) {

@@ -53,6 +53,17 @@ jobs:
           /tmp/tp3-texture-index
           python3 port/psp/test_arch_safety.py
 
+      - name: Test PSP target freshness and enlarged GS texture hot cache
+        run: |
+          set -euo pipefail
+          gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/psp \
+            port/psp/test_target_lifetime.c -o /tmp/tp3-target
+          /tmp/tp3-target
+          gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/psp \
+            port/psp/test_tex_reuse.c -o /tmp/tp3-tex-reuse
+          /tmp/tp3-tex-reuse
+          python3 port/psp/test_arch_safety.py
+
       - name: Compile PSP EBOOT using official pspdev SDK
         run: |
           set -euo pipefail
