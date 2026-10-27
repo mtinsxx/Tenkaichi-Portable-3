@@ -26,6 +26,12 @@ Goal: keep BT3's fighter meshes, animation, gameplay and anime outline while red
 - Preserve hot texture descriptor indices on append. Only destructive descriptor changes (eviction/memmove) bump the table serial; GS memory updates still invalidate through the upload epoch.
 - Host checks assert exact transformed vertex bytes and cache invalidation rules. SDK CI builds EBOOT; real PPSSPP runtime improvement remains unproven until tested.
 
+### Step A3 — regressions and page-local RGB texture keys
+
+- Roll back `target_freshness` default to 0: the previous fullscreen stage corruption could be worsened by treating a cleared screen backing as a valid source. PSP framebuffer capture and cross-fade are **not yet** complete. This is a defensive rollback, not a claimed fix for black backgrounds.
+- For only non-indexed GS source textures covering <=16 GS pages, reuse the decoded PSP texture when every source page's generation counter is still identical, even if an unrelated upload changed the global epoch. Indexed CLUTs and larger/unsupported spans retain strict global invalidation. No colour/palette compromises; stale samples remain forbidden by page counter checks.
+- Record `unrelated-upload-skips` in `psp: texture guarded reuse`. Compare scene GS time, texture key+CLUT time, native VU1 and actual FPS after installing the EBOOT. No speedup claim without runtime measurements.
+
 ### Step B — VU1/GS native geometry
 
 - Count stage-program 399 rejects by reason (invalid W/clip/matrix/buffer) and trace which states force the interpreter.

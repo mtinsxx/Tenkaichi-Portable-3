@@ -34,6 +34,36 @@ int main(void) {
             assert(!Psp_TexReuseMatches(&hot[q],t+i,a,12,18,256,0,4));
         }
     }
+    {
+        uint32_t pages[512] = {0};
+        PspTexReuse e = {0};
+        unsigned i;
+        for(i=0;i<512;++i) pages[i] = i * 3u + 1u;
+        Psp_TexReuseRemember(&e,t,a,101,31,256,0,2);
+        Psp_TexReuseRememberPages(&e,pages,510u,4u); /* crossing VRAM end */
+        assert(Psp_TexReuseKeyStable(&e,t,a,31,256,0,3));
+        assert(Psp_TexReusePagesStillMatch(&e,pages,510u,4u));
+        assert(!Psp_TexReuseMatches(&e,t,a,102,31,256,0,3));
+        /* Unrelated write must allow fast reuse despite global epoch. */
+        pages[80]++;
+        assert(Psp_TexReusePagesStillMatch(&e,pages,510u,4u));
+        /* Any source-page write forbids it. */
+        pages[511]++;
+        assert(!Psp_TexReusePagesStillMatch(&e,pages,510u,4u));
+        pages[511]--;
+        pages[1]++;
+        assert(!Psp_TexReusePagesStillMatch(&e,pages,510u,4u));
+        pages[1]--;
+        assert(!Psp_TexReusePagesStillMatch(&e,pages,510u,5u));
+        assert(!Psp_TexReusePagesStillMatch(&e,pages,511u,4u));
+        assert(!Psp_TexReusePagesStillMatch(&e,pages,510u,17u));
+        Psp_TexReuseRemember(&e,t+1,a,102,31,256,0,3);
+        assert(!Psp_TexReusePagesStillMatch(&e,pages,510u,4u));
+        Psp_TexReuseRememberPages(&e,pages,10u,17u);
+        assert(!Psp_TexReusePagesStillMatch(&e,pages,10u,17u));
+        assert(!Psp_TexReuseKeyStable(&e,t,a,31,256,0,4));
+        assert(!Psp_TexReuseKeyStable(&e,t+1,a,32,256,0,4));
+    }
     puts("PSP GS guarded texture reuse invalidation passed");
     return 0;
 }

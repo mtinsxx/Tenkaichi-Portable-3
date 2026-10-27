@@ -64,6 +64,14 @@ jobs:
           /tmp/tp3-tex-reuse
           python3 port/psp/test_arch_safety.py
 
+      - name: Test GS source page generations after unrelated uploads
+        run: |
+          set -euo pipefail
+          gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/psp \
+            port/psp/test_tex_reuse.c -o /tmp/tp3-tex-pages
+          /tmp/tp3-tex-pages
+          python3 port/psp/test_arch_safety.py
+
       - name: Compile PSP EBOOT using official pspdev SDK
         run: |
           set -euo pipefail

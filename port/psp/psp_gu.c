@@ -154,6 +154,7 @@ static int sTexCount;
 static PspTexReuse sTexReuse[PSP_TEX_REUSE_SLOTS];
 static uint32_t sTexSerial = 1u;
 static unsigned sTexReuseHits, sTexReuseFullKeys;
+static unsigned sTexReuseUnrelatedUploads;
 static Target sTargets[MAX_TARGETS];
 static Vtx *sVb;             /* the vertex batch: ordinary memory, the engine reads it from there */
 static int sVbCount, sVbMode; /* count, and what primitives the batch holds */
@@ -635,7 +636,7 @@ static void *texture_get(int ctx, unsigned lodCap, int white_sprite,
        to every cache hit during the game's thousands of GS draws. */
     int sampleKey = ((++sProfKeyCalls & 31u) == 0);
     unsigned long long keyStartUs = sampleKey ? Psp_TimeUs() : 0;
-    unsigned reuseSlot;
+    unsigned reuseSlot, pageBase, pageCount;
     unsigned long long decodeStartUs;
 
     if (tw > 512) { tw = 512; }
@@ -647,9 +648,27 @@ static void *texture_get(int ctx, unsigned lodCap, int white_sprite,
     tw = Psp_LodDimension(tw, lodCap);
     th = Psp_LodDimension(th, lodCap);
     reuseSlot = Psp_TexReuseSlot(t0, texa, lodCap, white_sprite);
-    if (Psp_TexReuseMatches(&sTexReuse[reuseSlot], t0, texa,
-                            gGsPspTextureEpoch, sTexSerial,
-                            lodCap, white_sprite, (unsigned)sTexCount)) {
+    /* Compute only the page-span, not pixel hashes. A GS upload to an
+       unrelated page must not force thousands of unchanged RGB stage
+       textures through page hashing and the full cache scan again. */
+    pageBase = tbp / 32u;
+    pageCount = ((tbw ? tbw : 1u) * 64u * readH *
+                 (bits == 24u ? 32u : bits) / 8u + 8191u) / 8192u + 1u;
+    {
+        int hot = Psp_TexReuseMatches(&sTexReuse[reuseSlot], t0, texa,
+                                      gGsPspTextureEpoch, sTexSerial,
+                                      lodCap, white_sprite, (unsigned)sTexCount);
+        if (!hot && bits > 8u &&
+            Psp_TexReuseKeyStable(&sTexReuse[reuseSlot], t0, texa,
+                                  sTexSerial, lodCap, white_sprite,
+                                  (unsigned)sTexCount) &&
+            Psp_TexReusePagesStillMatch(&sTexReuse[reuseSlot], gGsPageGen,
+                                         pageBase, pageCount)) {
+            sTexReuse[reuseSlot].epoch = gGsPspTextureEpoch;
+            ++sTexReuseUnrelatedUploads;
+            hot = 1;
+        }
+        if (hot) {
         /* Source GS VRAM/CLUT and texture table unchanged since last key. */
         t = &sTex[sTexReuse[reuseSlot].index];
         ++sTexReuseHits;
@@ -666,6 +685,7 @@ static void *texture_get(int ctx, unsigned lodCap, int white_sprite,
             ++sProfKeySamples;
         }
         return t->ptr;
+        }
     }
     ++sTexReuseFullKeys;
     pages = ((tbw ? tbw : 1) * 64 * readH * (bits == 24 ? 32 : bits) / 8 + 8191) / 8192;
@@ -686,6 +706,9 @@ static void *texture_get(int ctx, unsigned lodCap, int white_sprite,
             Psp_TexReuseRemember(&sTexReuse[reuseSlot], t0, texa,
                                  gGsPspTextureEpoch, sTexSerial,
                                  lodCap, white_sprite, (unsigned)i);
+            if (bits > 8u)
+                Psp_TexReuseRememberPages(&sTexReuse[reuseSlot], gGsPageGen,
+                                           pageBase, pageCount);
             *tw_out = (int)sTex[i].w;
             *th_out = (int)sTex[i].h;
             *fmt_out = sTex[i].fmt;
@@ -840,6 +863,9 @@ static void *texture_get(int ctx, unsigned lodCap, int white_sprite,
         Psp_TexReuseRemember(&sTexReuse[reuseSlot], t0, texa,
                              gGsPspTextureEpoch, sTexSerial,
                              lodCap, white_sprite, (unsigned)(sTexCount - 1));
+        if (bits > 8u)
+            Psp_TexReuseRememberPages(&sTexReuse[reuseSlot], gGsPageGen,
+                                       pageBase, pageCount);
         t->tex0 = t0;
         t->texa = texa;
         t->gen = gen;
@@ -2384,9 +2410,10 @@ void Psp_GuStats(unsigned out[4]) {
             sTexCount, MAX_TEX, sTexMem / 1024u, sTexRamMem / 1024u,
             sTexRamPeak / 1024u, sTexCacheHits, sTexCacheMisses,
             sTexCacheEvicted, sTexHeapFailed, sTexOversized);
-    Psp_Log("psp: texture guarded reuse: hits=%u full-key=%u epoch=%u serial=%u\n",
-            sTexReuseHits, sTexReuseFullKeys, gGsPspTextureEpoch, sTexSerial);
-    sTexReuseHits = sTexReuseFullKeys = 0;
+    Psp_Log("psp: texture guarded reuse: hits=%u full-key=%u unrelated-upload-skips=%u epoch=%u serial=%u\n",
+            sTexReuseHits, sTexReuseFullKeys, sTexReuseUnrelatedUploads,
+            gGsPspTextureEpoch, sTexSerial);
+    sTexReuseHits = sTexReuseFullKeys = sTexReuseUnrelatedUploads = 0;
     Psp_Log("psp: texture LOD: tex_limit=%d reduced-new=%u cache-hits=%u cache-pixels-saved=%uK\n",
             gPspTexLimit, sLodReduced, sLodCacheHits,
             (unsigned)(sLodPixelsSaved / 1024ull));

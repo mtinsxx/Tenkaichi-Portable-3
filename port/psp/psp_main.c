@@ -63,8 +63,9 @@ int gPspSwapFromSdk = 1;
 /* Stage/display experiment, not texture or VU1 changes.
    scene_pair_screen=0 restores the historical routing. */
 int gPspScenePairScreen = 1;
-/* Clear stale physical framebuffer aliases after GU swaps. */
-int gPspTargetFreshness = 1;
+/* Experimental only: last change could make stage black because
+   PSP framebuffer readbacks and ownership are not fully implemented. */
+int gPspTargetFreshness = 0; /* rollback: latest battle screenshot lost stage background */
 /* Experimental top battle HUD sprite depth isolation. PSP uses one Z buffer
    for multiple GS FBPs; 2D overlay must not be occluded by 3D writes.
    hud_top_overlay=0 restores the exact old draw/depth behaviour. */
