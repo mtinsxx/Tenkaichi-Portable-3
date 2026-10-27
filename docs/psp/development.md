@@ -5,27 +5,22 @@ BT3_PSP_DEV=1 python3 port/psp/build.py
 ```
 
 builds `port/build/psp_dev/EBOOT.PBP`: the same program as the release, with its own title ("BT3 (development)")
-so that it can be installed next to it, and every setting of `bt3.txt` read. It shares `ms0:/PSP/GAME/BT3/`
-(the disc files, saves and settings) with the release.
+so that it can be installed next to it. It shares `ms0:/PSP/GAME/BT3/`
+(the disc files, saves and the game's settings) with the release.
 
-## `ms0:/PSP/GAME/BT3/bt3.txt`
+## Native EBOOT settings
 
-One `name=value` per line; `#` starts a comment. The settings read by both builds:
+The diagnostic PSP `EBOOT.PBP` embeds the renderer defaults, portable controller mapping,
+normal GE depth and bounded `LOG_ALL` profiler. It does not read `bt3.txt`.
+To change experimental options, rebuild from source rather than editing a config file.
 
-| Setting | Meaning |
-|---|---|
-| `disc=<folder>` | Another place for the game files |
-| `wide=0` | The PS2's 4:3 picture in the middle of the screen (the default: the picture filled to 16:9) |
-| `heap=<MB>` | Ignored with a warning: game heap is fixed at 29 MiB for PS2 memory layout compatibility |
-| `report=1` / `report=0` | Enable / disable two-second speed, draw and texture diagnostics in the log (default: 1) |
-| `gs_depth=0|1|2` | GE depth test/write from the GS `TEST`/`ZBUF` registers: `0` off (default, submission order decides), `1` every target, `2` screen target only (work passes keep the scene's one depth buffer intact). Diagnostic for fighters/stages drawing inside-out; see [DIAGNOSTICO_FPS_TEXTURAS_2026-10-26.md](DIAGNOSTICO_FPS_TEXTURAS_2026-10-26.md) |
-| `mode=demo` | A computer against computer fight instead of the menus |
-| `demopick=<n>`, `demostage=<id>`, `demochara1=<id>`, `demochara2=<id>` | Which test fight |
+The file `bt3_settings.txt` is the game's **separate in-game settings** and remains
+supported. See [LOG_ALL.md](LOG_ALL.md).
 
 ## The log
 
 `ms0:/PSP/GAME/BT3/log.txt`, written by every run (the release overwrites it, the development build too). It has
-the start-up, the messages of the file and data loading, and with `report=1` every two seconds:
+the start-up, the messages of the file and data loading, and automatically every two seconds:
 
 ```
 psp: 61 blanks in 2.00 s = 30.4 a second = 101% of the console's speed (draws 41231, batches 1902, new textures 33, left out 210)
@@ -42,7 +37,7 @@ textures had to be decoded out of GS memory, and `left out` how many primitives 
 | Path | Contents |
 |---|---|
 | `port/psp/build.py` | The build |
-| `port/psp/psp_main.c` | Start-up, settings, the log, the ways out |
+| `port/psp/psp_main.c` | Start-up, built-in PSP defaults, the log, the ways out |
 | `port/psp/psp_gu.c` | The renderer (sceGu): textures, blending, the batches, the frame |
 | `port/psp/psp_gfx.c` | The controller, the vertical blanks' pace, the report |
 | `port/psp/psp_audio.c`, `sdlshim/` | Sound output, under the PC port's sound code (`port/src/gs/snd_adx.c`, `snd_se.c`) |

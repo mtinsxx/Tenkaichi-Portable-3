@@ -68,7 +68,7 @@ values on the disc (`psp_dat.c`) and the stubs for the functions of the PS2's li
 
 Copy `EBOOT.PBP` to `ms0:/PSP/GAME/BT3/` on the memory stick, and the files of your own USA disc
 (SLUS-21678) to `ms0:/PSP/GAME/BT3/disc/`, as they lie on it — `SLUS_216.78`, `BIN/DBZP.BIN` and `DATA/`.
-Every run writes `ms0:/PSP/GAME/BT3/log.txt`; `bt3.txt` next to it sets the options listed in the README.
+Every run writes `ms0:/PSP/GAME/BT3/log.txt`. `LOG_ALL` is built into the diagnostic EBOOT, which does not read `bt3.txt`.
 
 ## Running it in PPSSPP
 
@@ -110,8 +110,7 @@ buffers. The disc's files are read in pieces, never held whole, so their size do
 
 All of it needs a console with 64 MB of memory: a PSP-2000, 3000, Go or E1000, and `MEMSIZE=1` in `PARAM.SFO`
 (the build writes it) so that the system hands the program the whole user memory and not 32 MB of it. On a
-PSP-1000 the heap cannot be had and the program says so at start; `heap=<MB>` in `bt3.txt` asks for a smaller
-one, which the game runs out of sooner or later.
+PSP-1000 the heap cannot be had and the program says so at start. Heap size is fixed to preserve the PS2 memory layout and cannot be changed by a TXT file.
 
 The PSP's 2 MB of graphics memory holds two 480 x 272 frame buffers, the depth buffer and the textures
 (`port/psp/psp_gu.c`); a texture too big for what is left is left out of the picture rather than stopping

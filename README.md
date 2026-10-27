@@ -102,9 +102,8 @@ files are the unmodified USA release and tells you if they are not.
 
 ## Controls
 
-**Tenkaichi Portable 3 builds start with the experimental `portable` controls enabled**,
-even if no `bt3.txt` is present. To restore the older control scheme, add
-`controls=legacy` to `ms0:/PSP/GAME/BT3/bt3.txt` and restart. Only while
+**Tenkaichi Portable 3 now includes the `portable` controls natively in the EBOOT.**
+There is no external `bt3.txt` parser. Only while
 **actively fighting**, the analog stick moves, D-pad UP/DOWN flies up/down, L charges Ki and R
 locks on. L + UP/DOWN retains the original PS2 direction for supers and Ultimate;
 L + R + UP/DOWN allows charged vertical flight.
@@ -118,9 +117,9 @@ A short SELECT-chord grace window and latched modifiers reduce unintended transf
 The original pad mapping is restored automatically in paused menus, cutscenes and other
 non-fight states using the game's battle flags; this is not yet tested end-to-end in PPSSPP.
 See [full PSP control reference, timings and limitations](docs/psp/CONTROLS_ROADMAP_PTBR.md)
-(in Portuguese). To roll back, remove the setting or set `controls=legacy`.
+(in Portuguese). The legacy scheme remains in source for developer rebuilds, not a text-file setting.
 
-The **legacy** control type (selectable with `controls=legacy`):
+The **legacy** control type (available for developer rebuilds):
 
 | PSP | Action |
 |---|---|
@@ -147,9 +146,9 @@ The **legacy** control type (selectable with `controls=legacy`):
 
 - Saves (a virtual memory card) and settings are kept in `ms0:/PSP/GAME/BT3/`: `saves/` and `bt3_settings.txt`.
   `log.txt` there describes the last run, which helps with bug reports.
-- Optional settings go in `ms0:/PSP/GAME/BT3/bt3.txt`, one per line: `wide=0` shows the PS2's original 4:3
-  picture, `disc=<folder>` reads the game files from another folder, `report=1` writes the speed into the log
-  every two seconds.
+- The PSP diagnostic `EBOOT.PBP` always enables [LOG ALL](docs/psp/LOG_ALL.md) and reports FPS/GS/VU1/texture events
+  to `log.txt` every ~2 seconds. It **does not read `bt3.txt`**. This adds diagnostic overhead,
+  so reported FPS from this build is not a clean performance benchmark.
 - The port runs the PSP at its standard clocks (333 MHz): no overclocking.
 
 ## Building
