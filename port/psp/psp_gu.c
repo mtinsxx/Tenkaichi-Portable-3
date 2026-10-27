@@ -151,6 +151,7 @@ typedef struct Target {
     void *snapshot;      /* 512x512 RGB5551 main-RAM GE texture */
     void *snapshotRaw;   /* original allocation, reused on target eviction */
     PspGsFbVersion snapVersion;
+    unsigned snapshotSampledFrame; /* GE may still be sampling this RAM */
 } Target;
 
 static unsigned int __attribute__((aligned(64))) sList[65536];
@@ -702,7 +703,9 @@ static int target_get(uint32_t fbp, int create) {
     }
     if (slot < 0) { /* the one not drawn into for the longest time gives its place up */
         for (i = 0; i < MAX_TARGETS; i++) {
-            if (sTargets[i].fbp != (uint32_t)gGsMainFbp && (slot < 0 || sTargets[i].last < sTargets[slot].last)) {
+            if (sTargets[i].fbp != (uint32_t)gGsMainFbp &&
+                sTargets[i].snapshotSampledFrame != sFrame &&
+                (slot < 0 || sTargets[i].last < sTargets[slot].last)) {
                 slot = i;
             }
         }
@@ -712,6 +715,9 @@ static int target_get(uint32_t fbp, int create) {
     }
     sTargets[slot].used = 1;
     PspGsFb_Reset(&sTargets[slot].snapVersion);
+    /* Reusing a slot is safe only if its RAM texture is not in the
+       current GE list (see the snapshotSampledFrame LRU exclusion). */
+    sTargets[slot].snapshotSampledFrame=UINT32_MAX;
     sTargets[slot].fbp = fbp;
     sTargets[slot].gen = 0;
     sTargets[slot].rendered = 0;  /* never sample uninitialized backing VRAM */
@@ -1632,6 +1638,7 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
             sTexClut = NULL;
             sTexClutTicket = 0;
             tex = snapshotReady ? sTargets[src].snapshot : sTargets[src].color;
+            if(snapshotReady) sTargets[src].snapshotSampledFrame=sFrame;
             tw = 512;
             th = snapshotReady ? 512 : 256;
             fmt = GU_PSM_5551;
