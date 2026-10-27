@@ -48,6 +48,7 @@
 #include "psp_gs_depth_z.h"
 #include "psp_tex_reuse.h"
 #include "psp_tex_lru.h"
+#include "psp_t8_native.h"
 #include "psp_gpu_probe.h"
 #include "psp_vram_address.h"
 #include "psp_tex_lifetime.h"
@@ -120,6 +121,7 @@ typedef struct Tex {
     uint32_t gen;
     void *ptr;               /* VRAM or aligned main RAM, readable by GE */
     void *heap_alloc;        /* malloc base when stored in main RAM */
+    void *clut;              /* 256 RGBA8888 entries, NULL for expanded textures */
     unsigned w, h, bytes;
     int fmt;                 /* GU_PSM_5551 / GU_PSM_8888 */
     int swizzled;            /* whether this texture uses the PSP's tiled layout */
@@ -163,6 +165,8 @@ static unsigned long long sLodPixelsSaved;
 static unsigned sTexPressureEvictions, sTexRecoveredAllocations;
 static unsigned sTexScratchFailures, sTexScratchRecovered;
 static int sTexSwizzled;     /* layout of the last cache-hit/new texture */
+static void *sTexClut;      /* T8 CLUT attached to the last cache hit/miss */
+static unsigned sT8NativeNew, sT8NativeHits, sT8NativeSaved;
 static Tex sTex[MAX_TEX];
 static int sTexCount;
 static PspTexReuse sTexReuse[PSP_TEX_REUSE_SLOTS];
@@ -381,7 +385,7 @@ static void Psp_DiagAllReport(void) {
 
 /* ---- the state the engine is in (only what changed is sent again) ---- */
 static struct {
-    void *tex;
+    void *tex, *clut;
     int tw, th, fmt, tmode;
     int tfx, tcc, wrapu, wrapv, filt;
     int blendop, src, dst, sfix, dfix, blend_on;
@@ -765,6 +769,8 @@ static void *texture_get(int ctx, unsigned lodCap, int white_sprite,
         *th_out = (int)t->h;
         *fmt_out = t->fmt;
         sTexSwizzled = t->swizzled;
+        sTexClut = t->clut;
+        if (t->clut) ++sT8NativeHits;
         if (sampleKey) {
             sProfKeySampleUs += Psp_TimeUs() - keyStartUs;
             ++sProfKeySamples;
@@ -799,6 +805,8 @@ static void *texture_get(int ctx, unsigned lodCap, int white_sprite,
             *th_out = (int)sTex[i].h;
             *fmt_out = sTex[i].fmt;
             sTexSwizzled = sTex[i].swizzled;
+            sTexClut = sTex[i].clut;
+            if (sTexClut) ++sT8NativeHits;
             if (sampleKey) {
                 sProfKeySampleUs += Psp_TimeUs() - keyStartUs;
                 ++sProfKeySamples;
@@ -812,6 +820,75 @@ static void *texture_get(int ctx, unsigned lodCap, int white_sprite,
     }
     ++sTexCacheMisses;
     decodeStartUs = Psp_TimeUs();
+    /* Fast path for the 8-bit PS2 stage textures, verified on the user's
+       LOG_ALL as TEX0.PSM=19 (PSMT8). Previously every indexed texel
+       expanded to RGBA32 then copied to RGBA5551/8888 on EVERY cache miss.
+       Keep compressed 8-bit texels in GE-native GU_PSM_T8 and use its
+       256-entry RGBA8888 CLUT. Same GS swizzle and alpha, 2-4x less
+       texture memory, fewer repeated decodes and cache evictions.
+       White-font variants from fe93677 remain RGBA baked, untouched.
+       Do NOT apply this to PSMT8H (0x1b): different GS storage plane. */
+    if (psm == 0x13u && !white_sprite) {
+        uint8_t *idx;
+        void *ptr=NULL,*heap_alloc=NULL;
+        uint32_t *palette;
+        unsigned indexBytes = PspT8_AlignedBytes(tw,th);
+        unsigned allocated = PspT8_AllocatedBytes(tw,th);
+        int tiled = tw >= 16u && th >= 8u;
+        if (sScratchIndices && Psp_TexUseScratch(
+                readW * readH, PSP_TEX_SCRATCH_INDEX_BYTES)) {
+            idx=sScratchIndices; ++sScratchIndicesUses;
+        } else {
+            idx=tex_malloc_pressure((size_t)readW*readH);
+        }
+        if (!idx) return NULL;
+        if (!Gs_VramReadIdx8(tbp,tbw,psm,readW,readH,idx,readW)) {
+            tex_temp_free(idx);
+            return NULL;
+        }
+        if (readW != tw || readH != th)
+            Psp_LodSubsample8(idx,readW,readH,tw,th);
+        if (sTexCount >= MAX_TEX) tex_evict(0);
+        if (allocated <= MAX_TEX_BYTES/2 &&
+            ((allocated+63u)&~63u) <= MAX_TEX_BYTES-sTexMem)
+            ptr=tex_alloc(allocated);
+        if (!ptr) ptr=tex_alloc_ram(allocated,&heap_alloc);
+        if (!ptr) { tex_temp_free(idx); return NULL; }
+        palette=(uint32_t *)((uint8_t *)ptr+indexBytes);
+        if (tiled) swizzle((uint8_t *)ptr,idx,tw,th,1);
+        else memcpy(ptr,idx,tw*th);
+        for (i=0;i<256u;i++) {
+            unsigned e=PspT8_Csm1Index(i);
+            uint32_t c=Gs_VramRead(cbp,1,cpsm,e&15u,e>>4);
+            palette[i]=PspT8_GuPaletteColor(Gs_Expand(c,cpsm));
+        }
+        if (heap_alloc) sceKernelDcacheWritebackRange(ptr,allocated);
+        sceGuTexFlush();
+        t=&sTex[sTexCount++];
+        Psp_TexReuseRemember(&sTexReuse[reuseSlot],t0,texa,
+                 gGsPspTextureEpoch,sTexSerial,lodCap,
+                 white_sprite,(unsigned)(sTexCount-1));
+        t->tex0=t0; t->texa=texa; t->gen=gen;
+        t->ptr=ptr; t->heap_alloc=heap_alloc; t->clut=palette;
+        t->w=tw; t->h=th; t->bytes=allocated;
+        t->fmt=GU_PSM_T8; t->swizzled=tiled;
+        t->white_sprite=0; t->last=sFrame;
+        t->useTicket=++sTexUseTicket;
+        sTexSwizzled=tiled; sTexClut=palette;
+        ++sNewTex; ++sT8NativeNew;
+        sT8NativeSaved += (tw*th*2u > allocated) ?
+                          tw*th*2u-allocated : 0u;
+        if (tw != readW || th != readH) {
+            ++sLodReduced;
+            sLodPixelsSaved+=(unsigned long long)readW*readH -
+                             (unsigned long long)tw*th;
+        }
+        *tw_out=(int)tw; *th_out=(int)th; *fmt_out=GU_PSM_T8;
+        tex_temp_free(idx);
+        sProfDecodeUs+=Psp_TimeUs()-decodeStartUs;
+        ++sProfDecodeCount;
+        return ptr;
+    }
     if (sScratchRgba && Psp_TexUseScratch(
             readW * readH * 4u, PSP_TEX_SCRATCH_RGBA_BYTES)) {
         px = sScratchRgba;
@@ -957,6 +1034,8 @@ static void *texture_get(int ctx, unsigned lodCap, int white_sprite,
         t->gen = gen;
         t->ptr = ptr;
         t->heap_alloc = heap_alloc;
+        t->clut = NULL;
+        sTexClut = NULL;
         t->w = tw;
         t->h = th;
         t->fmt = fmt;
@@ -1103,6 +1182,13 @@ static void state_apply(void) {
         if (first || p->tex == NULL || sSt.fmt != p->fmt ||
             sSt.tmode != p->tmode) {
             sceGuTexMode(sSt.fmt, 0, 0, sSt.tmode);
+        }
+        if (sSt.clut && (first || p->clut != sSt.clut)) {
+            /* PSP CLUT loads eight colors per block: 32 blocks = 256.
+               Palette and index pixels are in one cache-owned allocation.
+               No palette is reused after its texture is evicted. */
+            sceGuClutMode(GU_PSM_8888,0,255,0);
+            sceGuClutLoad(32,sSt.clut);
         }
         /* A work framebuffer can be changed between two reads of the
            SAME address; therefore always invalidate on a FB texture bind,
@@ -1424,6 +1510,7 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
             /* A valid framebuffer viewed as a texture is linear. Its physical
                pitch is 512 and PSP textures require power-of-two dimensions. */
             texIsTarget = 1;
+            sTexClut = NULL;
             tex = sTargets[src].color;
             tw = 512;
             th = 256;
@@ -1588,7 +1675,8 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
         int scx = (int)(sc & 0x7FF), scy = (int)((sc >> 32) & 0x7FF);
 
         memset(&n, 0, sizeof(n));
-        n.tex = tex; n.tw = tw; n.th = th; n.fmt = fmt;
+        n.tex = tex; n.clut = tme && !texIsTarget ? sTexClut : NULL;
+        n.tw = tw; n.th = th; n.fmt = fmt;
         n.target = sTargets[targetIndex].color;
         n.tmode = texIsTarget ? 0 : sTexSwizzled;
         /* The PS2 GS DECAL (TFX=1) REPLACES RGB with the texture.
@@ -2550,6 +2638,9 @@ void Psp_GuStats(unsigned out[4]) {
             sProfDrawCalls, sProfDrawSamples);
     sProfDrawCalls = sProfDrawSamples = 0;
     sProfDrawSampleUs = 0;
+    Psp_Log("psp: indexed PSMT8 native GU T8: new=%u cache-hits=%u decoded-storage-saved=%uKB (white-sprite unchanged)\n",
+            sT8NativeNew,sT8NativeHits,sT8NativeSaved/1024u);
+    sT8NativeNew=sT8NativeHits=sT8NativeSaved=0;
     Psp_Log("psp: texture cache: entries=%d/%d vram=%u KB ram=%u KB peak=%u KB hits=%u misses=%u evicted=%u alloc-failed=%u oversized=%u\n",
             sTexCount, MAX_TEX, sTexMem / 1024u, sTexRamMem / 1024u,
             sTexRamPeak / 1024u, sTexCacheHits, sTexCacheMisses,

@@ -128,6 +128,13 @@ jobs:
             port/psp/test_vram_address.c -o /tmp/tp3-vram-address
           /tmp/tp3-vram-address
 
+      - name: Test PSP compressed PSMT8 palette/index semantics
+        run: |
+          set -euo pipefail
+          gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/psp \
+            port/psp/test_t8_native.c -o /tmp/tp3-native-t8
+          /tmp/tp3-native-t8
+
       - name: Compile PSP EBOOT using official pspdev SDK
         run: |
           set -euo pipefail
