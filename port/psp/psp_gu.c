@@ -51,6 +51,7 @@
 #include "psp_gs_static_skip.h"
 #include "psp_gu_scissor.h"
 #include "psp_gs_frame_mask.h"
+#include "psp_gs_afail.h"
 #include "psp_gs_fb_reconstruct.h"
 #include "psp_tex_reuse.h"
 #include "psp_tex_lru.h"
@@ -324,6 +325,7 @@ static unsigned sFbSnapshotsAllocFail, sFbSnapshotsDeferred;
 static unsigned sFbSnapshotAllocs, sFbSnapshotBudgetSkip;
 static unsigned sFbAliasHit, sFbAliasFallback, sFbAliasReupload;
 static unsigned sFbAliasUnrendered, sFbAliasSelf, sFbWorkOwnerChanges;
+static unsigned sFbPsmAliasRejected, sGsAfailSecondPass, sGsAfailHudFallback;
 static unsigned sTargetRebindInvalid, sTargetScreenCleared;
 extern int gPspTargetFreshness;
 extern int gGsMainFbp; /* gs_sony.c: the frame buffer the frame is drawn into */
@@ -419,6 +421,7 @@ static struct {
     int tfx, tcc, wrapu, wrapv, filt;
     int blendop, src, dst, sfix, dfix, blend_on;
     int atest, afunc, aref, amask;
+    int gsAfail, gsAtst; /* TEST.AFAIL and original PS2 ATST */
     int ztest, zfunc, zwrite;
     int scx, scy, scw, sch;
     unsigned pixelMask;
@@ -1428,13 +1431,40 @@ static void movie_draw_frame(void) {
 }
 
 /* ------------------------------------------------------------------ drawing */
-static void flush(void) {
-    if (sVbCount == 0) {
-        return;
+static int gs_atst_to_gu(unsigned atst) {
+    switch(atst&7u) {
+    case 0: return GU_NEVER;
+    case 1: return GU_ALWAYS;
+    case 2: return GU_LESS;
+    case 3: return GU_LEQUAL;
+    case 4: return GU_EQUAL;
+    case 5: return GU_GEQUAL;
+    case 6: return GU_GREATER;
+    default:return GU_NOTEQUAL;
     }
+}
+static void flush(void) {
+    if (sVbCount == 0) return;
     state_apply();
     sceKernelDcacheWritebackRange(sVb, (size_t)sVbCount * sizeof(Vtx));
     sceGuDrawArray(sVbMode, GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_2D, sVbCount, NULL, sVb);
+    /* GS AFAIL: after drawing alpha-passing pixels, replay only the
+       alpha-failing subset. The GS reference still depth-tests these
+       fragments, but changes which destination planes receive writes.
+       Preserve fragment order within each batched primitive group.
+       HUD stencil operations own the alpha bit and keep their existing
+       translation; those unusual AFAIL cases retain the legacy path. */
+    if (sSt.atest && PspGs_AfailNeedsReplay(1u,(unsigned)sSt.gsAfail)) {
+        __typeof__(sSt) original=sSt;
+        sSt.afunc=gs_atst_to_gu(PspGs_InverseAtst((unsigned)sSt.gsAtst));
+        sSt.pixelMask|=PspGs_AfailPassMask((unsigned)original.gsAfail);
+        if(!PspGs_AfailWritesZ((unsigned)original.gsAfail))
+            sSt.zwrite=0;
+        state_apply();
+        sceGuDrawArray(sVbMode, GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_2D, sVbCount, NULL, sVb);
+        ++sGsAfailSecondPass;
+        sSt=original; /* next state_apply restores the primary GE state */
+    }
     sVbCount = 0;
     sBatches++;
 }
@@ -1805,6 +1835,7 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
        so an upload over the same page makes subsequent sampling fall back
        to the actual decoded texture instead of stale framebuffer pixels. */
     sTargets[targetIndex].gen = gGsPageGen[(uint32_t)fbp & 511];
+    sTargets[targetIndex].psm = (uint32_t)((frame >> 24) & 63u);
     sTargets[targetIndex].rendered = 1;
     PspGsFb_OnDraw(&sTargets[targetIndex].snapVersion);
     /* GS coordinates 0..512 span the whole PSP width; height is 448. */
@@ -1861,9 +1892,19 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
            rectangular image tiles or rejected entire UI layers.
            Both sampled alpha AND AREF must use the same scale: PS2
            GS 0x80 = full opacity, PSP 0xFF = full opacity. */
-        n.atest = (int)(test & 1) && ((test >> 12) & 3) == 0;
-        n.afunc = afunc == 1 ? GU_ALWAYS : afunc == 2 ? GU_LESS : afunc == 3 ? GU_LEQUAL :
-                  afunc == 4 ? GU_EQUAL : afunc == 5 ? GU_GEQUAL : afunc == 6 ? GU_GREATER : afunc == 7 ? GU_NOTEQUAL : GU_NEVER;
+        n.gsAtst=afunc;
+        /* The first pass always respects TEST.ATE. Non-KEEP modes get
+           a second pass for the fragment subset that failed the test. */
+        n.gsAfail=(int)((test>>12)&3u);
+        n.atest=(int)(test&1u);
+        if(hudMaskMode!=PSP_HUD_MASK_NONE && n.gsAfail!=0) {
+            /* The battle HUD's DATE/stencil emulation uses the sole GU
+               alpha bit. Do not let a second pass erase that stencil. */
+            n.gsAfail=0;
+            n.atest=0;
+            ++sGsAfailHudFallback;
+        }
+        n.afunc=gs_atst_to_gu((unsigned)afunc);
         n.aref = gPspAlphaFix
                ? (int)alpha_scale((unsigned)((test >> 4) & 0xFF))
                : (int)((test >> 4) & 0xFF);
@@ -2967,6 +3008,9 @@ void Psp_GuStats(unsigned out[4]) {
     sTexEvictAfterFrame = sTexEvictSameFrame = 0;
     sTexEvictFenceUs = 0;
     sScratchRgbaUses = sScratchIndicesUses = 0;
+    Psp_Log("psp: GS AFAIL pass: replays=%u HUD-stencil-legacy=%u; cross-PSM framebuffer aliases rejected=%u (5551 cannot encode swizzled/32-bit destination)\n",
+            sGsAfailSecondPass, sGsAfailHudFallback, sFbPsmAliasRejected);
+    sGsAfailSecondPass=sGsAfailHudFallback=sFbPsmAliasRejected=0;
     Psp_Log("psp: fb-alias: valid=%u fallback=%u reupload=%u unrendered=%u self=%u scratch-owner-changes=%u\n",
             sFbAliasHit, sFbAliasFallback, sFbAliasReupload,
             sFbAliasUnrendered, sFbAliasSelf, sFbWorkOwnerChanges);
