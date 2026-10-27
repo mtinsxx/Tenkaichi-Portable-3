@@ -36,6 +36,7 @@
 #include "texture_lod.h"
 #include "psp_stage4.h"
 #include "psp_stage4_clip.h"
+#include "psp_shadow6.h"
 #include "psp_stage_clip_cache.h"
 #include "psp_log_all.h"
 #include "psp_gu_swap_check.h"
@@ -191,6 +192,11 @@ static PspStageClipCache sStage4ClipCache;
 static unsigned sNativeStageCachedClipTriangles;
 static unsigned sNativeStageClipTriangles, sNativeStageClipOutside, sNativeStageClipFailed;
 static unsigned sNativeStageBatches, sNativeStageVerts, sNativeStageFallback;
+/* VU1 program6 had a no-op backend. GPU ground-shadow strips now
+   use the exact screen/UV input layout and conservative clip guards. */
+static PspShadow6Vertex sShadow6Prepared[1024];
+static unsigned char sShadow6Valid[1024];
+static unsigned sShadow6Calls,sShadow6Triangles,sShadow6Skipped;
 /* Native program-4 triangle GS batching: the original GsGpu_Draw
    still handles the first triangle of each strip, subsequent triangles
    reuse its texture/target/state and emit identical GU vertices. */
@@ -2215,8 +2221,46 @@ void GsGpu_DrawVu4(int ctx, const float *vertices, uint32_t count,
     sNativeStageVerts += count;
     sStage4PreparedCount = 0;
 }
-void GsGpu_DrawVu6(int ctx, const float *vertices, uint32_t count, const float *consts) {
-    (void)ctx; (void)vertices; (void)count; (void)consts;
+void GsGpu_DrawVu6(int ctx, const float *vertices, uint32_t count,
+                   const float *consts) {
+    uint32_t i;
+    GsVertex tri[3];
+    float ox,oy;
+    if (!sReady||!vertices||!consts||count<3u||count>1024u) return;
+    /* Program6's HLE sends ctx=-1 to use GS.PRIM's current context. */
+    if(ctx<0) ctx=(int)((gGs.prim>>9)&1u);
+    if(ctx>1) return;
+    ++sShadow6Calls;
+    ox=(float)(gGs.xyoffset[ctx]&0xffffu)/16.0f;
+    oy=(float)((gGs.xyoffset[ctx]>>32)&0xffffu)/16.0f;
+    for(i=0;i<count;i++) {
+        sShadow6Valid[i]=(unsigned char)PspShadow6_Transform(
+             &sShadow6Prepared[i],vertices+(size_t)i*16u,consts,ox,oy);
+    }
+    for(i=0;i+2u<count;i++) {
+        uint32_t ids[3]={(i&1u)?i+1u:i,
+                         (i&1u)?i:i+1u,i+2u},j;
+        unsigned char valid[3],flags[3];
+        for(j=0;j<3u;j++) {
+            valid[j]=sShadow6Valid[ids[j]];
+            flags[j]=sShadow6Prepared[ids[j]].drop;
+        }
+        if(!PspShadow6_TriangleVisible(valid,flags)) {
+            ++sShadow6Skipped; continue;
+        }
+        for(j=0;j<3u;j++) {
+            const PspStage4Vertex *v=&sShadow6Prepared[ids[j]].p;
+            memset(&tri[j],0,sizeof(tri[j]));
+            tri[j].x=v->x;tri[j].y=v->y;tri[j].z=v->z;
+            tri[j].s=v->s;tri[j].t=v->t;tri[j].q=v->q;
+            tri[j].r=v->r;tri[j].g=v->g;
+            tri[j].b=v->b;tri[j].a=v->a;
+        }
+        /* Normal GS state path preserves depth/alpha/tex/scissor; this
+           is conservative until the shadow fast-batch is validated. */
+        GsGpu_Draw(3,ctx,tri);
+        ++sShadow6Triangles;
+    }
 }
 
 /* The game is about to fill a frame buffer from the processor (the fades: the shown picture read back and put
@@ -2510,6 +2554,9 @@ void Psp_GuStats(unsigned out[4]) {
             sFighterNativeBatches,sFighterNativeVerts,
             sFighterNativeFallback,gPspNativeFighter);
     sFighterNativeBatches = sFighterNativeVerts = sFighterNativeFallback = 0;
+    Psp_Log("psp: native ground shadows VU1 program6: calls=%u triangles=%u invalid-or-flagged=%u\n",
+            sShadow6Calls,sShadow6Triangles,sShadow6Skipped);
+    sShadow6Calls=sShadow6Triangles=sShadow6Skipped=0;
     Psp_Log("psp: native stage VU1 program4: batches=%u vertices=%u conservative-fallbacks=%u enabled=%d\n",
             sNativeStageBatches, sNativeStageVerts, sNativeStageFallback,
             gPspNativeStage4);
