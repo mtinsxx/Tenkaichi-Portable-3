@@ -14,5 +14,5 @@ assert 'fopen(HOME "/bt3.txt"' not in main
 assert "read_settings();" not in main
 assert "static void setting(" not in main
 assert "> dist/PSP/GAME/BT3/bt3.txt" not in wf
-assert "TP3-NATIVE-LOGALL-20261027" in main
+assert "TP3-GE-PIXELS-LOGGUARD-20261027" in main
 print("EBOOT embedded LOG_ALL, portable controls, depth=2; no bt3.txt dependency")
