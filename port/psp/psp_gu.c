@@ -51,6 +51,7 @@
 #include "psp_gs_static_skip.h"
 #include "psp_gu_scissor.h"
 #include "psp_gs_frame_mask.h"
+#include "psp_gs_afail.h"
 #include "psp_gs_fb_reconstruct.h"
 #include "psp_tex_reuse.h"
 #include "psp_tex_lru.h"
@@ -143,6 +144,7 @@ typedef struct Tex {
 
 typedef struct Target {
     uint32_t fbp;
+    uint32_t psm; /* GS FRAME.PSM which produced this 5551 pixel view */
     void *color, *depth;
     unsigned last;
     uint32_t gen;  /* last GS upload generation when this FBP was rendered */
@@ -324,6 +326,8 @@ static unsigned sFbSnapshotsAllocFail, sFbSnapshotsDeferred;
 static unsigned sFbSnapshotAllocs, sFbSnapshotBudgetSkip;
 static unsigned sFbAliasHit, sFbAliasFallback, sFbAliasReupload;
 static unsigned sFbAliasUnrendered, sFbAliasSelf, sFbWorkOwnerChanges;
+static unsigned sFbPsmAliasRejected, sGsAfailSecondPass, sGsAfailHudFallback;
+static unsigned sGsUploadSnapshot, sGsUploadUnsupported;
 static unsigned sTargetRebindInvalid, sTargetScreenCleared;
 extern int gPspTargetFreshness;
 extern int gGsMainFbp; /* gs_sony.c: the frame buffer the frame is drawn into */
@@ -419,6 +423,7 @@ static struct {
     int tfx, tcc, wrapu, wrapv, filt;
     int blendop, src, dst, sfix, dfix, blend_on;
     int atest, afunc, aref, amask;
+    int gsAfail, gsAtst; /* TEST.AFAIL and original PS2 ATST */
     int ztest, zfunc, zwrite;
     int scx, scy, scw, sch;
     unsigned pixelMask;
@@ -728,6 +733,7 @@ static int target_get(uint32_t fbp, int create) {
        current GE list (see the snapshotSampledFrame LRU exclusion). */
     sTargets[slot].snapshotSampledFrame=UINT32_MAX;
     sTargets[slot].fbp = fbp;
+    sTargets[slot].psm = UINT32_MAX;
     sTargets[slot].gen = 0;
     sTargets[slot].rendered = 0;  /* never sample uninitialized backing VRAM */
     sTargets[slot].last = sFrame;
@@ -1428,13 +1434,41 @@ static void movie_draw_frame(void) {
 }
 
 /* ------------------------------------------------------------------ drawing */
-static void flush(void) {
-    if (sVbCount == 0) {
-        return;
+static int gs_atst_to_gu(unsigned atst) {
+    switch(atst&7u) {
+    case 0: return GU_NEVER;
+    case 1: return GU_ALWAYS;
+    case 2: return GU_LESS;
+    case 3: return GU_LEQUAL;
+    case 4: return GU_EQUAL;
+    case 5: return GU_GEQUAL;
+    case 6: return GU_GREATER;
+    default:return GU_NOTEQUAL;
     }
+}
+static void flush(void) {
+    if (sVbCount == 0) return;
     state_apply();
     sceKernelDcacheWritebackRange(sVb, (size_t)sVbCount * sizeof(Vtx));
     sceGuDrawArray(sVbMode, GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_2D, sVbCount, NULL, sVb);
+    /* GS AFAIL: after drawing alpha-passing pixels, replay only the
+       alpha-failing subset. The GS reference still depth-tests these
+       fragments, but changes which destination planes receive writes.
+       Preserve fragment order within each batched primitive group.
+       HUD stencil operations own the alpha bit and keep their existing
+       translation; those unusual AFAIL cases retain the legacy path. */
+    if (sSt.atest && sSt.gsAtst!=1 &&
+        PspGs_AfailNeedsReplay(1u,(unsigned)sSt.gsAfail)) {
+        __typeof__(sSt) original=sSt;
+        sSt.afunc=gs_atst_to_gu(PspGs_InverseAtst((unsigned)sSt.gsAtst));
+        sSt.pixelMask|=PspGs_AfailPassMask((unsigned)original.gsAfail);
+        if(!PspGs_AfailWritesZ((unsigned)original.gsAfail))
+            sSt.zwrite=0;
+        state_apply();
+        sceGuDrawArray(sVbMode, GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_2D, sVbCount, NULL, sVb);
+        ++sGsAfailSecondPass;
+        sSt=original; /* next state_apply restores the primary GE state */
+    }
     sVbCount = 0;
     sBatches++;
 }
@@ -1495,11 +1529,10 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
             return;
         }
     }
-    /* GS frame PSMCT16 colour pixels have the same 5551 channel layout
-       as PSP GU_PSM_5551. Direct output is now supported only for PSM
-       0x02 and only when colour does NOT alias the depth page.
-       The PS2 16S swizzle, framebuffer readbacks and depth-as-texture
-       are still unsupported and must use the previous skip path. */
+    /* Both GS PSMCT16 and PSMCT16S use the same pixel bit layout as
+       GU_PSM_5551, so direct 5551 rasterization is safe if depth does
+       not share the colour page. The different PS2 16S VRAM swizzle,
+       framebuffer rereads and depth-as-texture are NOT implemented. */
     {
         uint32_t framePsm = (uint32_t)((frame >> 24) & 0x3Fu);
         int is16 = Gs_PsmBits(framePsm) == 16;
@@ -1552,13 +1585,16 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
         int snapshotReady = 0;
         if (src >= 0) {
             Target *old = &sTargets[src];
+            if(old->rendered &&
+               !PspVram_CanAliasGsPsm(old->psm,tpsm))
+                ++sFbPsmAliasRejected;
             /* A GS memory page can hold a framebuffer at one time and an
                ordinary texture after a host-to-local upload. Do not bind
                stale PSP framebuffer VRAM when the GS upload generation has
                changed. This matches the reference GPU's alias check. */
             if ((tbp & 31u) == 0 && old->rendered &&
                 old->gen == gGsPageGen[old->fbp & 511] &&
-                PspVram_CanAliasIndexed(tpsm) &&
+                PspVram_CanAliasGsPsm(old->psm,tpsm) &&
                 old->fbp != (uint32_t)fbp &&
                 /* Two PS2 display FBPs can share one PSP draw surface,
                    which must never be read as texture while being written. */
@@ -1593,7 +1629,7 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
                 }
             } else if ((tbp & 31u) == 0 &&
                        old->gen==gGsPageGen[old->fbp & 511u] &&
-                       PspVram_CanAliasIndexed(tpsm) &&
+                       PspVram_CanAliasGsPsm(old->psm,tpsm) &&
                        PspGsFb_SampleValid(&old->snapVersion,old->gen) &&
                        old->fbp!=(uint32_t)fbp) {
                 /* The physical WORK surface was reused, but a previous
@@ -1603,7 +1639,7 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
                 ++sFbSnapshotsSampled;
             } else {
                 ++sFbAliasFallback;
-                if (!PspVram_CanAliasIndexed(tpsm)) {
+                if (!PspVram_CanAliasGsPsm(old->psm,tpsm)) {
                     Psp_DiagAllIncident(PSP_DIAG_FB_INDEXED_FORMAT,ctx,tpsm);
                 } else if (old->gen != gGsPageGen[old->fbp & 511]) {
                     ++sFbAliasReupload;
@@ -1806,6 +1842,7 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
        so an upload over the same page makes subsequent sampling fall back
        to the actual decoded texture instead of stale framebuffer pixels. */
     sTargets[targetIndex].gen = gGsPageGen[(uint32_t)fbp & 511];
+    sTargets[targetIndex].psm = (uint32_t)((frame >> 24) & 63u);
     sTargets[targetIndex].rendered = 1;
     PspGsFb_OnDraw(&sTargets[targetIndex].snapVersion);
     /* GS coordinates 0..512 span the whole PSP width; height is 448. */
@@ -1862,9 +1899,19 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
            rectangular image tiles or rejected entire UI layers.
            Both sampled alpha AND AREF must use the same scale: PS2
            GS 0x80 = full opacity, PSP 0xFF = full opacity. */
-        n.atest = (int)(test & 1) && ((test >> 12) & 3) == 0;
-        n.afunc = afunc == 1 ? GU_ALWAYS : afunc == 2 ? GU_LESS : afunc == 3 ? GU_LEQUAL :
-                  afunc == 4 ? GU_EQUAL : afunc == 5 ? GU_GEQUAL : afunc == 6 ? GU_GREATER : afunc == 7 ? GU_NOTEQUAL : GU_NEVER;
+        n.gsAtst=afunc;
+        /* The first pass always respects TEST.ATE. Non-KEEP modes get
+           a second pass for the fragment subset that failed the test. */
+        n.gsAfail=(int)((test>>12)&3u);
+        n.atest=(int)(test&1u);
+        if(hudMaskMode!=PSP_HUD_MASK_NONE && n.gsAfail!=0) {
+            /* The battle HUD's DATE/stencil emulation uses the sole GU
+               alpha bit. Do not let a second pass erase that stencil. */
+            n.gsAfail=0;
+            n.atest=0;
+            ++sGsAfailHudFallback;
+        }
+        n.afunc=gs_atst_to_gu((unsigned)afunc);
         n.aref = gPspAlphaFix
                ? (int)alpha_scale((unsigned)((test >> 4) & 0xFF))
                : (int)((test >> 4) & 0xFF);
@@ -2451,20 +2498,34 @@ void GsGpu_DrawVu6(int ctx, const float *vertices, uint32_t count,
     }
 }
 
-/* The game is about to fill a frame buffer from the processor (the fades: the shown picture read back and put
-   into two buffers). What it will hold is the picture on the screen, so that is what is put there. */
+/* Called BEFORE a CPU host-to-GS upload overwrites either of the two
+   512x448 GS display pages (0 and 0x70). Preserve a previously rendered
+   PSP screen if a matching logical FBP is already tracked. Use the
+   EXISTING 1.5 MiB virtual-framebuffer snapshot pool and its GE fences;
+   never allocate another dedicated capture, or read an unsynchronized
+   framebuffer with the CPU. This only preserves RGB5551 pixels and is
+   not a PSMCT32 writeback into the swizzled GS 4 MiB memory. */
 void GsGpu_FbUpload(int second) {
-    if (!sReady) {
-        return;
+    const uint32_t fbp = second ? 0x70u : 0u;
+    unsigned i;
+    if (!sReady) return;
+    flush(); /* ensure preceding PSP draws are queued before the copy */
+    for (i=0u;i<MAX_TARGETS;i++) {
+        Target *t=&sTargets[i];
+        if(!t->used || t->fbp!=fbp)continue;
+        if(t->rendered && t->gen==gGsPageGen[fbp&511u] &&
+           (PspGsFb_SampleValid(&t->snapVersion,t->gen) ||
+            snapshot_target((int)i))) {
+            ++sGsUploadSnapshot;
+            return;
+        }
+        break;
     }
-    /* The original GS path reads back framebuffer pixels to an image
-       that is later used in fade/effects passes. PSP currently has NO
-       equivalent readback/copy here: flush() only submits queued draws.
-       Log reachability without claiming the effect has been ported. */
+    /* GS upload itself still uses gs_core.c VRAM. If no coherent GE
+       image exists, don't claim the framebuffer was reconstructed. */
+    ++sGsUploadUnsupported;
     ++sDiagUnimplementedFbUpload;
     Psp_DiagAllIncident(PSP_DIAG_FB_UPLOAD_UNSUPPORTED,-1,(unsigned)second);
-    flush();
-    (void)second;
 }
 
 void GsGpu_Native(int effect) {
@@ -2781,7 +2842,7 @@ void Psp_GuStats(unsigned out[4]) {
     Psp_Log("psp: architecture gaps: unimplemented-fb-readbacks=%u native-effects=%u (no pixels copied for FB readback)\n",
             sDiagUnimplementedFbUpload, sDiagUnimplementedNativeEffect);
     sDiagUnimplementedFbUpload = sDiagUnimplementedNativeEffect = 0;
-    Psp_Log("psp: GS PSMCT16 colour output: native=%u legacy-skipped=%u option=%d (16S/depth still unsupported)\n",
+    Psp_Log("psp: GS PSMCT16/16S direct colour: native=%u legacy-skipped=%u option=%d (depth-texture/GS-VRAM swizzle still unsupported)\n",
             sDiagFb16Native, sDiagSkip16, gPspGsFb16);
     sDiagFb16Native = 0;
     Psp_Log("psp: GS source scissor culling: empty=%u fully-outside=%u (before texture cache/GE)\n",
@@ -2968,6 +3029,12 @@ void Psp_GuStats(unsigned out[4]) {
     sTexEvictAfterFrame = sTexEvictSameFrame = 0;
     sTexEvictFenceUs = 0;
     sScratchRgbaUses = sScratchIndicesUses = 0;
+    Psp_Log("psp: GS pre-upload FBP capture: saved-or-current=%u unsupported=%u (uses existing 1.5MiB pool, 5551 not GS RGBA32)\n",
+            sGsUploadSnapshot,sGsUploadUnsupported);
+    sGsUploadSnapshot=sGsUploadUnsupported=0;
+    Psp_Log("psp: GS AFAIL pass: replays=%u HUD-stencil-legacy=%u; cross-PSM framebuffer aliases rejected=%u (5551 cannot encode swizzled/32-bit destination)\n",
+            sGsAfailSecondPass, sGsAfailHudFallback, sFbPsmAliasRejected);
+    sGsAfailSecondPass=sGsAfailHudFallback=sFbPsmAliasRejected=0;
     Psp_Log("psp: fb-alias: valid=%u fallback=%u reupload=%u unrendered=%u self=%u scratch-owner-changes=%u\n",
             sFbAliasHit, sFbAliasFallback, sFbAliasReupload,
             sFbAliasUnrendered, sFbAliasSelf, sFbWorkOwnerChanges);
