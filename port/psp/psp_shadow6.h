@@ -29,7 +29,12 @@ static inline int PspShadow6_Transform(PspShadow6Vertex *out,
         if(!__builtin_isfinite(v[i])) return 0;
     for(i=8u;i<12u;i++)
         if(!__builtin_isfinite(v[i])) return 0;
-    PspStage4_Multiply(screen,consts,v);
+    /* VU6's fourth input word is a packed flag, NOT position.w.
+       Vita's kind=2 uses the affine screen translation u13 * 1.0. */
+    {
+        float pos[4]={v[0],v[1],v[2],1.0f};
+        PspStage4_Multiply(screen,consts,pos);
+    }
     for(i=0;i<4u;i++)
         if(!__builtin_isfinite(screen[i]))return 0;
     if(!(screen[3]>0.0001f))return 0;
