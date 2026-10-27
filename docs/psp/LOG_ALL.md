@@ -34,3 +34,7 @@ reduzir o FPS observado. Ele não vê pixels após rasterização e
 **não detecta automaticamente todos os defeitos possíveis**.
 Para uma versão futura sem a sobrecarga, será necessário recompilar
 ou produzir uma build de produção separada, sem configuração em TXT.
+
+## Pixel-surface verification after GPU completion (2026-10-27)
+
+The existing native PSP `LOG_ALL` now logs `psp: LOG_ALL PIXELS post-GE` during sampled fight frames. After the *existing* `sceGuSync()` (no extra stall), it samples 192 physical RGB5551 pixels from each surface: screen drawbuffer, WORK0 (FBP336) and WORK1 (FBP368). The log records the number of RGB-nonblack pixels, first-192 hash, logical owners and stage/fighter submission counts. This **does not** assert visual correctness: a sparse grid can miss thin geometry and the hashes cannot tell which GS primitive wrote a pixel. It does locate whether the missing scene is visibly stored in screen vs auxiliary VRAM, and requires no `bt3.txt` or PSP settings edits. Normal geometry, depth test and textures stay untouched.

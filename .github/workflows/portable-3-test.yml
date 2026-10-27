@@ -102,6 +102,13 @@ jobs:
             port/psp/test_tex_lru.c -o /tmp/tp3-texture-lru
           /tmp/tp3-texture-lru
 
+      - name: Test GE-completed framebuffer output sampling
+        run: |
+          set -euo pipefail
+          gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/psp \
+            port/psp/test_gpu_probe.c -o /tmp/tp3-gpu-probe
+          /tmp/tp3-gpu-probe
+
       - name: Compile PSP EBOOT using official pspdev SDK
         run: |
           set -euo pipefail

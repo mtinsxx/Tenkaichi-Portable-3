@@ -48,6 +48,7 @@
 #include "psp_gs_depth_z.h"
 #include "psp_tex_reuse.h"
 #include "psp_tex_lru.h"
+#include "psp_gpu_probe.h"
 #include "psp_tex_lifetime.h"
 
 #define SCR_W 480
@@ -274,6 +275,7 @@ static unsigned sGuSwapMismatch, sGuSwapUnknown;
 static unsigned sFrameStageInputs, sFrameFighterInputs;
 static unsigned sFrameScreenDraws, sFrameWorkDraws, sFrameWorkOwners;
 static unsigned sFrameDiagShown, sFrameLastDiag;
+static unsigned sPixelProbeShown, sPixelProbeLastFrame;
 static unsigned sTargetsRegistered;
 /* Each physical PSP WORK surface has its own logical GS owner.
    GS 336 lives in WORK0, GS 368 in WORK1; other scratch targets
@@ -2144,6 +2146,27 @@ void GsGpu_FrameEnd(void) {
     sceGuFinish();
     sceGuSync(0, 0);
     sProfGeSyncUs += Psp_TimeUs() - t0;
+    /* Capture the physical outputs of GE, not just submitted triangles.
+       Sampling waits for the existing sync above: NO extra GPU stall.
+       Keep diagnostic logs bounded on very long battles. Never touch
+       depth bits or GU state (previous depth=0 test broke fighters). */
+    if (gPspLogAll && (sFrameStageInputs || sFrameFighterInputs) &&
+        (sPixelProbeShown < 24u || sFrame - sPixelProbeLastFrame >= 30u)) {
+        const volatile uint16_t *screen=(const volatile uint16_t *)
+            (sVram+sMainDrawOffset);
+        const volatile uint16_t *w0=(const volatile uint16_t *)(sVram+WORK_OFF);
+        const volatile uint16_t *w1=(const volatile uint16_t *)(sVram+WORK2_OFF);
+        PspGpuPixelProbe a=PspGpuProbe5551(screen,BUF_W,SCR_W,SCR_H);
+        PspGpuPixelProbe b=PspGpuProbe5551(w0,BUF_W,SCR_W,SCR_H);
+        PspGpuPixelProbe c=PspGpuProbe5551(w1,BUF_W,SCR_W,SCR_H);
+        Psp_Log("psp: LOG_ALL PIXELS post-GE frame=%u main-fbp=%d screen=%u/%u hash=%08x work0-owner=%u work0=%u/%u hash=%08x work1-owner=%u work1=%u/%u hash=%08x stage-input=%u fighter-input=%u\n",
+                sFrame, gGsMainFbp, a.colored,a.pixels,a.hash,
+                sWorkOwnerFbp[0],b.colored,b.pixels,b.hash,
+                sWorkOwnerFbp[1],c.colored,c.pixels,c.hash,
+                sFrameStageInputs,sFrameFighterInputs);
+        sPixelProbeLastFrame=sFrame;
+        ++sPixelProbeShown;
+    }
     /* Port_VBlank in plat_stub.c already waits on the game's 59.94 Hz
        clock (1 tick in menus, 2 ticks in battles). An unconditional
        sceDisplayWaitVblankStart here can add a second frame delay and
