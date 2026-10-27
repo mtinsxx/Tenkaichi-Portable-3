@@ -101,6 +101,10 @@
 #define MAX_RAM_TEX_BYTES (10u * 1024u * 1024u)
 #define MAX_QUEUE 8192       /* vertices of one batch */
 #define MAX_TARGETS 6
+/* Maximum 1.5 MiB main RAM reserved for loss-limited GS feedback
+ * snapshots. The PSP homebrew process must leave memory for GS VRAM,
+ * decoded textures, microprogram interpreter, movie and sound. */
+#define MAX_FB_SNAPSHOTS 3u
 
 /* MPEG-2 movie (512x448 RGBA) -> small, linear 512x256 5551 texture in
    cached main RAM (not VRAM: framebuffers and the game texture cache must
@@ -316,6 +320,7 @@ static uint32_t sWorkOwnerFbp[PSP_WORK_SURFACES] = {UINT32_MAX,UINT32_MAX};
 static unsigned sWorkPairSamples, sWorkPairOwnerMisses;
 static unsigned sFbSnapshotsSaved, sFbSnapshotsSampled;
 static unsigned sFbSnapshotsAllocFail, sFbSnapshotsDeferred;
+static unsigned sFbSnapshotAllocs, sFbSnapshotBudgetSkip;
 static unsigned sFbAliasHit, sFbAliasFallback, sFbAliasReupload;
 static unsigned sFbAliasUnrendered, sFbAliasSelf, sFbWorkOwnerChanges;
 static unsigned sTargetRebindInvalid, sTargetScreenCleared;
@@ -646,10 +651,15 @@ static int snapshot_target(int slot) {
         return 0;
     }
     if(!t->snapshot) {
+        if(sFbSnapshotAllocs>=MAX_FB_SNAPSHOTS) {
+            ++sFbSnapshotBudgetSkip;
+            return 0;
+        }
         t->snapshotRaw=malloc(PSP_GS_FB_SNAPSHOT_BYTES+63u);
         if(!t->snapshotRaw) {++sFbSnapshotsAllocFail;return 0;}
         aligned=((uintptr_t)t->snapshotRaw+63u)&~(uintptr_t)63u;
         t->snapshot=(void *)aligned;
+        ++sFbSnapshotAllocs;
         /* Black padding keeps T8/GU padding outside 480x272 defined. */
         memset(t->snapshot,0,PSP_GS_FB_SNAPSHOT_BYTES);
         sceKernelDcacheWritebackInvalidateRange(t->snapshot,
@@ -2721,9 +2731,12 @@ void Psp_GuStats(unsigned out[4]) {
             gPspNativeStageClip, sNativeStageCachedClipTriangles);
     sNativeStageCachedClipTriangles = 0;
     sNativeStageClipTriangles = sNativeStageClipOutside = sNativeStageClipFailed = 0;
-    Psp_Log("psp: GS framebuffer virtualization: saved=%u sampled-after-owner-change=%u allocation-failed=%u transfer-deferred=%u; packed GS alpha/PSMT8 remains unavailable\n",
-            sFbSnapshotsSaved,sFbSnapshotsSampled,sFbSnapshotsAllocFail,sFbSnapshotsDeferred);
-    sFbSnapshotsSaved=sFbSnapshotsSampled=sFbSnapshotsAllocFail=sFbSnapshotsDeferred=0;
+    Psp_Log("psp: GS framebuffer virtualization: saved=%u sampled-after-owner-change=%u allocation-failed=%u budget-skipped=%u active-snapshots=%u/%u deferred=%u; packed GS alpha/PSMT8 still unavailable\n",
+            sFbSnapshotsSaved,sFbSnapshotsSampled,sFbSnapshotsAllocFail,
+            sFbSnapshotBudgetSkip,sFbSnapshotAllocs,(unsigned)MAX_FB_SNAPSHOTS,
+            sFbSnapshotsDeferred);
+    sFbSnapshotsSaved=sFbSnapshotsSampled=sFbSnapshotsAllocFail=
+        sFbSnapshotBudgetSkip=sFbSnapshotsDeferred=0;
     Psp_Log("psp: architecture gaps: unimplemented-fb-readbacks=%u native-effects=%u (no pixels copied for FB readback)\n",
             sDiagUnimplementedFbUpload, sDiagUnimplementedNativeEffect);
     sDiagUnimplementedFbUpload = sDiagUnimplementedNativeEffect = 0;
