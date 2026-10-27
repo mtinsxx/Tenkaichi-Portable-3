@@ -647,7 +647,8 @@ static int snapshot_target(int slot) {
     t=&sTargets[slot];
     if(!t->used||!t->rendered)return 0;
     if(t->gen!=gGsPageGen[t->fbp & 511u])return 0;
-    if(!PspGsFb_CanSave(&t->snapVersion,sFrame)) {
+    if(!PspGsFb_CanSave(&t->snapVersion,sFrame,
+                            t->snapshotSampledFrame)) {
         ++sFbSnapshotsDeferred;
         return 0;
     }
@@ -681,10 +682,18 @@ static int target_get(uint32_t fbp, int create) {
     for (i = 0; i < MAX_TARGETS; i++) {
         if (sTargets[i].used && sTargets[i].fbp == fbp) {
             void *nextBacking = target_color(fbp);
-            if (gPspTargetFreshness && sTargets[i].rendered &&
-                !PspTarget_RebindStillRendered(sTargets[i].rendered,
-                                               sTargets[i].color, nextBacking)) {
-                sTargets[i].rendered = 0;
+            if (sTargets[i].rendered &&
+                PspGsFb_BackingChanged((uintptr_t)sTargets[i].color,
+                                        (uintptr_t)nextBacking)) {
+                /* Before reusing a logical FBP with a DIFFERENT physical
+                   PSP backing, preserve the old completed GE image.
+                   The previous code left rendered=1 by default because
+                   target_freshness was disabled, silently treating a
+                   newly selected drawbuffer as already initialized. */
+                if(!PspGsFb_SampleValid(&sTargets[i].snapVersion,
+                                          sTargets[i].gen))
+                    snapshot_target(i);
+                sTargets[i].rendered=0;
                 ++sTargetRebindInvalid;
             }
             sTargets[i].last = sFrame;
@@ -1567,9 +1576,18 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
                 if(PspGsFb_SampleValid(&old->snapVersion,old->gen) ||
                    snapshot_target(src)) {
                     snapshotReady=1;
+                    targetReady=1;
+                    ++sFbAliasHit;
+                    Psp_DiagAllIncident(PSP_DIAG_FB_ALIAS_VALID,ctx,tbp);
+                } else {
+                    /* Do not bind the physical 512x272 framebuffer as a
+                       PSP 512x256 texture. That alias reads into another
+                       VRAM allocation or truncates 16 rows, and it is
+                       particularly unsafe when the destination overlaps.
+                       Decode GS memory conservatively instead. */
+                    ++sFbAliasFallback;
+                    Psp_DiagAllIncident(PSP_DIAG_FB_OTHER_ALIAS,ctx,tbp);
                 }
-                ++sFbAliasHit;
-                Psp_DiagAllIncident(PSP_DIAG_FB_ALIAS_VALID,ctx,tbp);
             } else if ((tbp & 31u) == 0 &&
                        old->gen==gGsPageGen[old->fbp & 511u] &&
                        PspVram_CanAliasIndexed(tpsm) &&
@@ -1637,10 +1655,13 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
             texIsTarget = 1;
             sTexClut = NULL;
             sTexClutTicket = 0;
-            tex = snapshotReady ? sTargets[src].snapshot : sTargets[src].color;
-            if(snapshotReady) sTargets[src].snapshotSampledFrame=sFrame;
+            /* All GPU-produced framebuffer textures use an explicitly
+               padded 512x512 snapshot. Never sample bare FB0/FB1/WORK
+               VRAM as a 512x256 texture with an invalid height/pitch. */
+            tex = sTargets[src].snapshot;
+            sTargets[src].snapshotSampledFrame=sFrame;
             tw = 512;
-            th = snapshotReady ? 512 : 256;
+            th = 512;
             fmt = GU_PSM_5551;
             /* In a framebuffer alias the source GS coordinates describe
                512x448 pixels; the PSP physical content is 480x272.
@@ -2748,10 +2769,10 @@ void Psp_GuStats(unsigned out[4]) {
             gPspNativeStageClip, sNativeStageCachedClipTriangles);
     sNativeStageCachedClipTriangles = 0;
     sNativeStageClipTriangles = sNativeStageClipOutside = sNativeStageClipFailed = 0;
-    Psp_Log("psp: GS framebuffer virtualization: saved=%u sampled-after-owner-change=%u allocation-failed=%u budget-skipped=%u active-snapshots=%u/%u deferred=%u; packed GS alpha/PSMT8 still unavailable\n",
+    Psp_Log("psp: GS framebuffer virtualization: saved=%u sampled-after-owner-change=%u allocation-failed=%u budget-skipped=%u active-snapshots=%u/%u deferred=%u physical-rebind-invalidations=%u; GS alpha/indexed feedback still unavailable\n",
             sFbSnapshotsSaved,sFbSnapshotsSampled,sFbSnapshotsAllocFail,
             sFbSnapshotBudgetSkip,sFbSnapshotAllocs,(unsigned)MAX_FB_SNAPSHOTS,
-            sFbSnapshotsDeferred);
+            sFbSnapshotsDeferred,sTargetRebindInvalid);
     sFbSnapshotsSaved=sFbSnapshotsSampled=sFbSnapshotsAllocFail=
         sFbSnapshotBudgetSkip=sFbSnapshotsDeferred=0;
     Psp_Log("psp: architecture gaps: unimplemented-fb-readbacks=%u native-effects=%u (no pixels copied for FB readback)\n",

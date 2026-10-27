@@ -28,10 +28,26 @@ typedef struct PspGsFbVersion {
 static inline void PspGsFb_OnDraw(PspGsFbVersion *v) {
     if(v) { ++v->written; if(!v->written) ++v->written; }
 }
+/* Copy only if the GS target changed since the last snapshot. A copy
+ * saved earlier in the SAME frame can be refreshed if its texture has
+ * NOT been sampled by a GE command yet. Never overwrite a snapshot
+ * the current GPU command list may still be reading.
+ * A snapshot from a previous frame is safe to refresh after the
+ * preceding list's synchronization at GsGpu_FrameEnd. */
 static inline int PspGsFb_CanSave(const PspGsFbVersion *v,
-                                  unsigned frame) {
+                                  unsigned frame,
+                                  unsigned sampledFrame) {
     return v && v->written != 0u &&
-           (!v->valid || v->frame != frame);
+           (!v->valid || v->saved != v->written) &&
+           sampledFrame != frame;
+}
+/* Rebinding an existing GS FBP to another physical PSP drawbuffer does
+ * NOT imply that the new backing contains the previously drawn pixels.
+ * Always preserve the old content (if possible) and invalidate the live
+ * physical alias before redirecting future GS commands to the new one. */
+static inline int PspGsFb_BackingChanged(uintptr_t oldBacking,
+                                         uintptr_t newBacking) {
+    return oldBacking != newBacking;
 }
 static inline void PspGsFb_Saved(PspGsFbVersion *v,
                  unsigned frame,uint32_t generation) {

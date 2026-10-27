@@ -16,19 +16,27 @@ int main(void) {
     assert(near(PspGsFb_PhysicalV(1.f*512.f),310.85714f));
     assert(!PspGsFb_SampleValid(&v,1u));
     PspGsFb_OnDraw(&v);
-    assert(PspGsFb_CanSave(&v,1u));
+    assert(PspGsFb_CanSave(&v,1u,UINT32_MAX));
     PspGsFb_Saved(&v,1u,4u);
     assert(PspGsFb_SampleValid(&v,4u));
     assert(!PspGsFb_SampleValid(&v,5u));
-    assert(!PspGsFb_CanSave(&v,1u));
+    /* Fresh version: do not waste a 480x272 GE transfer next frame. */
+    assert(!PspGsFb_CanSave(&v,1u,UINT32_MAX));
+    assert(!PspGsFb_CanSave(&v,2u,UINT32_MAX));
     PspGsFb_OnDraw(&v);
     assert(!PspGsFb_SampleValid(&v,4u));
-    assert(!PspGsFb_CanSave(&v,1u));
-    assert(PspGsFb_CanSave(&v,2u));
+    /* A second draw in the same frame CAN refresh before first sample. */
+    assert(PspGsFb_CanSave(&v,1u,UINT32_MAX));
+    /* After the same-frame sample, overwriting the RAM GE texture
+       would corrupt in-flight reads: defer until a later frame. */
+    assert(!PspGsFb_CanSave(&v,1u,1u));
+    assert(PspGsFb_CanSave(&v,2u,1u));
     PspGsFb_Saved(&v,2u,5u);
     assert(PspGsFb_SampleValid(&v,5u));
     PspGsFb_Reset(&v);
     assert(!PspGsFb_SampleValid(&v,5u));
+    assert(!PspGsFb_BackingChanged(0x44000000u,0x44000000u));
+    assert(PspGsFb_BackingChanged(0x44000000u,0x44044000u));
     puts("PSP virtual GS FB write-version, save lifetime, source gen and UV parity passed");
     return 0;
 }
