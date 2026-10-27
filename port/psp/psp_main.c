@@ -30,7 +30,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "battle/battle.h" /* real battle pause / overlay flags */
 #include "psp_controls.h" /* testable battle-state predicate */
 
 #define HOME "ms0:/PSP/GAME/BT3"
@@ -260,25 +259,8 @@ void Port_Missing(const char *name) {
     Port_MissingAt(name, NULL);
 }
 
-/* ---- where the game is ---- */
-extern struct { int state; } *gBtlSeq;
-int Psp_InBattle(void) { return gBtlSeq != NULL && gBtlSeq->state >= 0 && gBtlSeq->state <= 6; }
-/*
- * The fight sequence stays at state 3 while the pause/skill-list HUD is open.
- * The old state-only predicate let PSP up/down register as flight rather than
- * menu navigation during pauses. Use the game's actual battle work flags.
- * This also prevents portable combat bindings during demos/loading/cutscenes.
- */
-int Psp_InFight(void) {
-    const BattleWork *work;
-    const uint64_t inactive = (uint64_t)(BATTLE_FLAG_PAUSE | BATTLE_FLAG_PAUSE_MENU |
-                                        BATTLE_FLAG_DEMO | BATTLE_FLAG_READY |
-                                        BATTLE_FLAG_LOADING);
-    if (gBtlSeq == NULL || gBtlSeq->state != 3) return 0;
-    work = Battle_GetWork();
-    return work != NULL &&
-           PspControls_ActiveFight(gBtlSeq->state, work->running, work->flags, inactive);
-}
+/* Battle status access is in psp_battle_state.c, which can include the game's
+ * BattleWork declaration without colliding with PSP SDK typedefs. */
 
 /* exit(), from anywhere in the port or the game: keep the screen until it has been read. */
 void __wrap_exit(int code);

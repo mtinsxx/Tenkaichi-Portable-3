@@ -193,6 +193,7 @@ def port_sources():
               "plat_settings", "plat_stub", "plat_sys", "softfloat_ps2", "port_fast"):
         out.append((S / (n + ".c"), "gs" if n in ("plat_movie", "plat_mpeg2") else "ee"))
     out += [(V / "psp_mem.c", "hard"), (V / "psp_file.c", "hard"), (V / "psp_main.c", "hard"),
+            (V / "psp_battle_state.c", "hard"),
             (GEN / "psp_dat.c", "hard"), (S / "gs/gs_sony.c", "hard"),
             (V / "psp_gfx.c", "hard"), (S / "gs/gs_core.c", "gs"), (S / "gs/gs_vu1.c", "gs"),
             (V / "psp_gu.c", "hard"), (V / "psp_audio.c", "gs"), (S / "gs/snd_adx.c", "gs"), (S / "gs/snd_se.c", "gs"),

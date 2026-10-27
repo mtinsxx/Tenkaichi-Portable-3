@@ -8,6 +8,9 @@ on:
     branches: [main]
     paths:
       - .github/workflows/portable-3-test.yml
+      - "port/psp/**"
+      - "port/include/**"
+      - "include/battle/**"
 
 permissions:
   contents: read
