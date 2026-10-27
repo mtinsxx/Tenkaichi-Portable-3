@@ -1,0 +1,185 @@
+name: PSP EBOOT build
+
+# Manual backup PSP builder. The regular PSP workflow already builds main and PRs.
+# Avoid duplicate Actions minutes and duplicate public PR build artifacts.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  psp:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    container:
+      image: pspdev/pspdev:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Python build dependencies
+        run: |
+          if command -v apk >/dev/null 2>&1; then
+            apk add --no-cache python3 py3-pip make gcc musl-dev
+          elif command -v apt-get >/dev/null 2>&1; then
+            apt-get update
+            apt-get install -y --no-install-recommends python3 python3-pip make gcc
+          else
+            echo 'Unsupported package manager:'
+            cat /etc/os-release
+            exit 1
+          fi
+      - name: Inspect PSP toolchain
+        run: |
+          echo "PSPDEV=${PSPDEV:-unset}"
+          command -v psp-gcc
+          psp-gcc --version
+          python3 --version
+      - name: Test PSP kernel game-thread OOM boot ordering
+        run: python3 port/psp/test_thread_memory.py
+
+      - name: Test PSP VU1 runtime program profiling buckets
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_vu_profile.c -o /tmp/bt3-psp-vu-profile
+          /tmp/bt3-psp-vu-profile
+
+      - name: Test PSP native VU1 fighter animation and cel/fade light
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 port/psp/test_fighter_vu1.c -o /tmp/bt3-psp-fighter-vu1
+          /tmp/bt3-psp-fighter-vu1
+
+      - name: Test PSP GS PSMCT16 colour framebuffer translation
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 port/psp/test_gs_fb16.c -o /tmp/bt3-psp-fb16
+          /tmp/bt3-psp-fb16
+
+      - name: Test PSP battle HUD alpha-mask and destination-alpha operations
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_hud_mask.c -o /tmp/bt3-psp-hud-mask
+          /tmp/bt3-psp-hud-mask
+
+      - name: Test PSP top battle HUD sprite classification
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_hud_overlay.c -o /tmp/bt3-psp-hud-overlay
+          /tmp/bt3-psp-hud-overlay
+
+      - name: Test PSP paired display FBP routing and work isolation
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_scene_pair.c -o /tmp/bt3-psp-scene-pair
+          /tmp/bt3-psp-scene-pair
+
+      - name: Test PSP GU returned drawbuffer pointer normalization
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_gu_swap_check.c -o /tmp/bt3-psp-gu-swap
+          /tmp/bt3-psp-gu-swap
+
+      - name: Test PSP native stage GS triangle batch exact vertex parity
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_stage_tri_batch.c -lm -o /tmp/bt3-psp-stage-tri-batch
+          /tmp/bt3-psp-stage-tri-batch
+
+      - name: Test native PSP VU1 stage six-plane clipping and projection
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_stage4_clip.c -lm -o /tmp/bt3-psp-stage-clip
+          /tmp/bt3-psp-stage-clip
+
+      - name: Test native VU1 variable W against PSP affine GS UV semantics
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_native_variable_q.c -lm -o /tmp/bt3-psp-variable-q
+          /tmp/bt3-psp-variable-q
+
+      - name: Test PSP shared GS texture scratch and GE-fence lifetime
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_tex_lifetime.c -o /tmp/bt3-psp-tex-lifetime
+          /tmp/bt3-psp-tex-lifetime
+
+      - name: Test PSP GS guarded texture reuse and invalidation
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_tex_reuse.c -o /tmp/bt3-psp-tex-reuse
+          /tmp/bt3-psp-tex-reuse
+
+      - name: Test GS Z24 to PSP GU Z16 depth conversion
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 port/psp/test_gs_depth_z.c -o /tmp/bt3-psp-depth-z
+          /tmp/bt3-psp-depth-z
+
+      - name: Test native PSP VU1 stage geometry and clip fallback
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 port/psp/test_stage4.c -o /tmp/bt3-psp-native-stage4
+          /tmp/bt3-psp-native-stage4
+
+      - name: Differential PSP-native VIF 8/16-bit against PS2 reference
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 port/psp/test_vif_subword.c -o /tmp/bt3-psp-vif-subword
+          /tmp/bt3-psp-vif-subword
+
+      - name: Audit PSP/PS2 architecture safety invariants
+        run: python3 port/psp/test_arch_safety.py
+
+      - name: Test PSP boot-screen and diagnostic polish
+        run: python3 port/psp/test_boot_polish.py
+
+      - name: Test Ki blast call-argument ordering
+        run: python3 port/psp/test_kiblast_eval.py
+
+      - name: Test PSP 3D texture LOD sampling
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 port/psp/test_texture_lod.c -o /tmp/bt3-psp-tex-lod
+          /tmp/bt3-psp-tex-lod
+
+      - name: Test GS high-indexed texture arithmetic
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 port/psp/test_gs_hi_tex.c -o /tmp/bt3-psp-gs-hi-test
+          /tmp/bt3-psp-gs-hi-test
+
+      - name: Differential GS DECAL text RGB and alpha
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 port/psp/test_gs_decal.c -o /tmp/bt3-psp-decal
+          /tmp/bt3-psp-decal
+
+      - name: Test PSP MPEG2 RGB5551 frame equivalence
+        run: |
+          gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/src port/psp/test_movie_5551_speed.c -o /tmp/bt3-mpeg-5551-perf
+          /tmp/bt3-mpeg-5551-perf
+
+      - name: Test blockwise GS CLUT FNV hash equivalence
+        run: |
+          gcc -std=c99 -O2 -Wall -Wextra -Werror port/psp/test_clut_hash_speed.c -o /tmp/bt3-clut-hash-perf
+          /tmp/bt3-clut-hash-perf
+
+      - name: Test proven PR22 PS2 white font modulation on latest PSP
+        run: |
+          gcc -std=c99 -O2 -Wall -Wextra -Werror port/psp/test_gs_white_modulate.c -o /tmp/bt3-psp-white-font
+          /tmp/bt3-psp-white-font
+
+      - name: Test PS2-vs-PSP fixed-alpha font/menu blend
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 port/psp/test_gs_text_blend.c -o /tmp/bt3-psp-font-blend
+          /tmp/bt3-psp-font-blend
+
+      - name: Test experimental GS math without game assets
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 port/psp/test_gs_experiments.c -o /tmp/bt3-psp-gs-test
+          /tmp/bt3-psp-gs-test
+
+      - name: Build EBOOT.PBP
+        env:
+          PSPDEV: /usr/local/pspdev
+        run: |
+          export PATH="$PSPDEV/bin:$PATH"
+          python3 port/psp/build.py
+          test -s port/build/psp_rel/EBOOT.PBP
+      - name: Upload PSP build
+        uses: actions/upload-artifact@v4
+        with:
+          name: BT3-PSP-EBOOT
+          path: port/build/psp_rel/EBOOT.PBP
+          if-no-files-found: error
+      - name: Upload missing-callback diagnostics
+        uses: actions/upload-artifact@v4
+        with:
+          name: BT3-PSP-SYMBOL-DIAGNOSTICS
+          path: |
+            port/build/gen/psp_rel/missing_symbols.txt
+            port/build/gen/psp_rel/missing_callers.tsv
+            port/build/psp_rel/bt3.map
+          if-no-files-found: error

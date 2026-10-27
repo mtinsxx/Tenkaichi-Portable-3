@@ -1,0 +1,21 @@
+# Manual-only privacy checks. Run while the repository is still PRIVATE.
+# Exit code 1 means an item needs manual review, not necessarily a real secret.
+name: PSP pre-publication audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check all fetched Git history for secrets and personal commit emails
+        run: python3 scripts/pre_publication_audit.py

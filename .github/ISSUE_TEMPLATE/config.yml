@@ -1,0 +1,4 @@
+# Hide the blank-issue option from GitHub's template chooser.
+# This does NOT disable Issues or prevent GitHub API requests.
+# Disable Issues explicitly in Settings -> General -> Features if desired.
+blank_issues_enabled: false

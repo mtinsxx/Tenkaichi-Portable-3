@@ -1,0 +1,242 @@
+# Builds the PSP's EBOOT.PBP on GitHub's machines, from the repository alone.
+# No disc and no game data are involved: the game's data tables are built blank (port/data) and the finished
+# program fetches their values from the player's own disc at start. The same build runs locally with
+#   export PSPDEV=/usr/local/pspdev; export PATH=$PSPDEV/bin:$PATH; python3 port/psp/build.py
+#
+#   every push to main and every pull request   EBOOT.PBP as a downloadable artifact of the run
+#                                               (a check that everything still builds on the PSP)
+#   a tag  psp-v*                               the same, and a draft release with EBOOT.PBP attached
+#   "Run workflow" button                       the same as a push
+#
+# (The tag is psp-v*, not v*: a v* tag is the PC and Vita release of .github/workflows/release.yml, and two
+# workflows cannot create the same release.)
+name: psp
+
+on:
+  push:
+    branches: [main]
+    tags: ["psp-v*"]
+    paths-ignore: ["docs/**", "**.md", "LICENSE"]
+  pull_request:
+    paths-ignore: ["docs/**", "**.md", "LICENSE"]
+  workflow_dispatch:
+
+# Default to read-only permissions, including for pull requests from forks.
+permissions:
+  contents: read
+
+concurrency:
+  group: psp-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      # pspdev: psp-gcc for the PSP's MIPS Allegrex processor and pspsdk (sceGu, the stub libraries and the
+      # tools that make an EBOOT.PBP). The project publishes it prebuilt for each platform; the archive holds
+      # the pspdev/ directory, which is what PSPDEV points at.
+      - name: Install pspdev
+        run: |
+          set -e
+          curl -fL -o /tmp/pspdev.tar.gz \
+            "https://github.com/pspdev/pspdev/releases/download/v20261001/pspdev-ubuntu-latest-x86_64.tar.gz"
+          echo "the archive holds:"; tar tzf /tmp/pspdev.tar.gz | head -3
+          tar xzf /tmp/pspdev.tar.gz -C "$RUNNER_TEMP"
+          echo "PSPDEV=$RUNNER_TEMP/pspdev" >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP/pspdev/bin" >> "$GITHUB_PATH"
+
+      - name: The toolchain
+        run: |
+          set -e
+          test -x "$PSPDEV/bin/psp-gcc"
+          psp-gcc --version | head -1
+          ls "$PSPDEV/bin" | head -20
+
+      - name: Test experimental PSP controller mappings (host GCC)
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_psp_controls.c -o /tmp/bt3-psp-controls
+          /tmp/bt3-psp-controls
+
+      - name: Test PSP kernel game-thread OOM boot ordering
+        run: python3 port/psp/test_thread_memory.py
+
+      - name: Test PSP VU1 runtime program profiling buckets
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_vu_profile.c -o /tmp/bt3-psp-vu-profile
+          /tmp/bt3-psp-vu-profile
+
+      - name: Test PSP native VU1 fighter animation and cel/fade light
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 port/psp/test_fighter_vu1.c -o /tmp/bt3-psp-fighter-vu1
+          /tmp/bt3-psp-fighter-vu1
+
+      - name: Test PSP GS PSMCT16 colour framebuffer translation
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 port/psp/test_gs_fb16.c -o /tmp/bt3-psp-fb16
+          /tmp/bt3-psp-fb16
+
+      - name: Test PSP battle HUD alpha-mask and destination-alpha operations
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_hud_mask.c -o /tmp/bt3-psp-hud-mask
+          /tmp/bt3-psp-hud-mask
+
+      - name: Test PSP top battle HUD sprite classification
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_hud_overlay.c -o /tmp/bt3-psp-hud-overlay
+          /tmp/bt3-psp-hud-overlay
+
+      - name: Test PSP paired display FBP routing and work isolation
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_scene_pair.c -o /tmp/bt3-psp-scene-pair
+          /tmp/bt3-psp-scene-pair
+
+      - name: Test PSP GU returned drawbuffer pointer normalization
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_gu_swap_check.c -o /tmp/bt3-psp-gu-swap
+          /tmp/bt3-psp-gu-swap
+
+      - name: Test PSP native stage GS triangle batch exact vertex parity
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_stage_tri_batch.c -lm -o /tmp/bt3-psp-stage-tri-batch
+          /tmp/bt3-psp-stage-tri-batch
+
+      - name: Test native PSP VU1 stage six-plane clipping and projection
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_stage4_clip.c -lm -o /tmp/bt3-psp-stage-clip
+          /tmp/bt3-psp-stage-clip
+
+      - name: Test native VU1 variable W against PSP affine GS UV semantics
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_native_variable_q.c -lm -o /tmp/bt3-psp-variable-q
+          /tmp/bt3-psp-variable-q
+
+      - name: Test PSP shared GS texture scratch and GE-fence lifetime
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_tex_lifetime.c -o /tmp/bt3-psp-tex-lifetime
+          /tmp/bt3-psp-tex-lifetime
+
+      - name: Test PSP GS guarded texture reuse and invalidation
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_tex_reuse.c -o /tmp/bt3-psp-tex-reuse
+          /tmp/bt3-psp-tex-reuse
+
+      - name: Test GS Z24 to PSP GU Z16 depth conversion
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 port/psp/test_gs_depth_z.c -o /tmp/bt3-psp-depth-z
+          /tmp/bt3-psp-depth-z
+
+      - name: Test native PSP VU1 stage geometry and clip fallback
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 port/psp/test_stage4.c -o /tmp/bt3-psp-native-stage4
+          /tmp/bt3-psp-native-stage4
+
+      - name: Differential PSP-native VIF 8/16-bit against PS2 reference
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 port/psp/test_vif_subword.c -o /tmp/bt3-psp-vif-subword
+          /tmp/bt3-psp-vif-subword
+
+      - name: Audit PSP/PS2 architecture safety invariants
+        run: python3 port/psp/test_arch_safety.py
+
+      - name: Test PSP boot-screen and diagnostic polish
+        run: python3 port/psp/test_boot_polish.py
+
+      - name: Test Ki blast call-argument ordering
+        run: python3 port/psp/test_kiblast_eval.py
+
+      - name: Test PSP 3D texture LOD sampling
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 port/psp/test_texture_lod.c -o /tmp/bt3-psp-tex-lod
+          /tmp/bt3-psp-tex-lod
+
+      - name: Test GS high-indexed texture arithmetic
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 port/psp/test_gs_hi_tex.c -o /tmp/bt3-psp-gs-hi-test
+          /tmp/bt3-psp-gs-hi-test
+
+      - name: Differential GS DECAL text RGB and alpha
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 port/psp/test_gs_decal.c -o /tmp/bt3-psp-decal
+          /tmp/bt3-psp-decal
+
+      - name: Test PSP MPEG2 RGB5551 frame equivalence
+        run: |
+          gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/src port/psp/test_movie_5551_speed.c -o /tmp/bt3-mpeg-5551-perf
+          /tmp/bt3-mpeg-5551-perf
+
+      - name: Test blockwise GS CLUT FNV hash equivalence
+        run: |
+          gcc -std=c99 -O2 -Wall -Wextra -Werror port/psp/test_clut_hash_speed.c -o /tmp/bt3-clut-hash-perf
+          /tmp/bt3-clut-hash-perf
+
+      - name: Test proven PR22 PS2 white font modulation on latest PSP
+        run: |
+          gcc -std=c99 -O2 -Wall -Wextra -Werror port/psp/test_gs_white_modulate.c -o /tmp/bt3-psp-white-font
+          /tmp/bt3-psp-white-font
+
+      - name: Test PS2-vs-PSP fixed-alpha font/menu blend
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 port/psp/test_gs_text_blend.c -o /tmp/bt3-psp-font-blend
+          /tmp/bt3-psp-font-blend
+
+      - name: Test experimental GS math without game assets
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 port/psp/test_gs_experiments.c -o /tmp/bt3-psp-gs-test
+          /tmp/bt3-psp-gs-test
+
+      - name: Build EBOOT.PBP
+        run: python3 port/psp/build.py
+
+      - name: What was built
+        run: |
+          ls -l port/build/psp_rel/
+          python3 - <<'PY'
+          import struct, sys
+          # A PBP: "\0PBP", a version, then eight offsets - the SFO's, the icons', the pictures', the sound's
+          # and the program's - and the parts themselves after the 0x28-byte header.
+          d = open('port/build/psp_rel/EBOOT.PBP', 'rb').read()
+          if d[:4] != b'\x00PBP':
+              sys.exit('not a PBP (magic %r)' % d[:4])
+          off = {}
+          for i, name in enumerate(("PARAM.SFO", "ICON0.PNG", "ICON1.PMF", "PIC0.PNG", "PIC1.PNG",
+                                    "SND0.AT3", "the program", "PSAR")):
+              off[name], = struct.unpack('<I', d[0x08 + 4 * i:0x0C + 4 * i])
+          if d[off["PARAM.SFO"]:off["PARAM.SFO"] + 4] != b'\x00PSF':
+              sys.exit('no PARAM.SFO at 0x%X' % off["PARAM.SFO"])
+          if d[off["the program"]:off["the program"] + 4] != b'\x7fELF':
+              sys.exit('no program at 0x%X' % off["the program"])
+          if b'MEMSIZE' not in d[off["PARAM.SFO"]:off["PARAM.SFO"] + 0x400]:
+              sys.exit('PARAM.SFO has no MEMSIZE: the program would only get 32 MB of the console')
+          print('EBOOT.PBP %d bytes, PARAM.SFO at 0x%X, program at 0x%X (%d bytes)'
+                % (len(d), off["PARAM.SFO"], off["the program"], len(d) - off["the program"]))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BT3-PSP-EBOOT
+          path: port/build/psp_rel/EBOOT.PBP
+          if-no-files-found: error
+
+  # Publishing is separate from the build: untrusted PR code never gets a write token.
+  publish:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/psp-v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: BT3-PSP-EBOOT
+          path: release
+      - name: Draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" --draft --title "${GITHUB_REF_NAME}" --generate-notes \
+            release/EBOOT.PBP
