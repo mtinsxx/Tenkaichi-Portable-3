@@ -1203,9 +1203,8 @@ static void *texture_get(int ctx, unsigned lodCap, int white_sprite,
         if (heap_alloc != NULL) sceKernelDcacheWritebackRange(ptr, bytes);
         sceGuTexFlush();
         t = &sTex[sTexCount++];
-        /* Appending does not shift existing descriptors. Keep those hot
-           texture keys valid. Evictions still bump sTexSerial before
-           moving indices; VRAM uploads invalidate via texture epoch. */
+        /* Append does not shift descriptor indices; erasures repair only
+           affected TEX0 hot keys. GS uploads still change the epoch. */
         Psp_TexReuseRemember(&sTexReuse[reuseSlot], t0, texa,
                              gGsPspTextureEpoch, sTexSerial,
                              lodCap, white_sprite, (unsigned)(sTexCount - 1));
@@ -3013,12 +3012,12 @@ void Psp_GuStats(unsigned out[4]) {
             gPspNativeStageClip, sNativeStageCachedClipTriangles);
     sNativeStageCachedClipTriangles = 0;
     sNativeStageClipTriangles = sNativeStageClipOutside = sNativeStageClipFailed = 0;
-    Psp_Log("psp: GS framebuffer virtualization: saved=%u sampled-after-owner-change=%u allocation-failed=%u budget-skipped=%u active-snapshots=%u/%u deferred=%u physical-rebind-invalidations=%u; GS alpha/indexed feedback still unavailable\n",
+    Psp_Log("psp: GS framebuffer virtualization: saved=%u sampled-after-owner-change=%u allocation-failed=%u budget-skipped=%u active-snapshots=%u/%u recycled-stale=%u deferred=%u physical-rebind-invalidations=%u; GS alpha/indexed feedback still unavailable\n",
             sFbSnapshotsSaved,sFbSnapshotsSampled,sFbSnapshotsAllocFail,
             sFbSnapshotBudgetSkip,sFbSnapshotAllocs,(unsigned)MAX_FB_SNAPSHOTS,
-            sFbSnapshotsDeferred,sTargetRebindInvalid);
+            sFbSnapshotRecycled,sFbSnapshotsDeferred,sTargetRebindInvalid);
     sFbSnapshotsSaved=sFbSnapshotsSampled=sFbSnapshotsAllocFail=
-        sFbSnapshotBudgetSkip=sFbSnapshotsDeferred=0;
+        sFbSnapshotBudgetSkip=sFbSnapshotsDeferred=sFbSnapshotRecycled=0;
     Psp_Log("psp: architecture gaps: unimplemented-fb-readbacks=%u native-effects=%u (no pixels copied for FB readback)\n",
             sDiagUnimplementedFbUpload, sDiagUnimplementedNativeEffect);
     sDiagUnimplementedFbUpload = sDiagUnimplementedNativeEffect = 0;
