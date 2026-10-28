@@ -13,7 +13,7 @@ with tempfile.TemporaryDirectory() as tmp:
     src = root / "test.idx"
     src.write_bytes(bytes(range(16)))
     out = conv.write_t8(Namespace(width=4,height=4,source=str(src),
-                                  tbp=336,tbw=8,gen=0x12345678,output=None))
+                                  tbp=336,tbw=8,gen=0x12345678,output=root / "t8_0150_12345678_4x4.tp8"))
     assert out.name == "t8_0150_12345678_4x4.tp8"
     header = out.read_bytes()
     assert len(header) == 32+16
