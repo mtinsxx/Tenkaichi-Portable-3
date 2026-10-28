@@ -84,4 +84,29 @@ static inline void Psp_TexReuseRemember(PspTexReuse *e,
     e->pageCount = 0; /* never inherit another texture's snapshot */
     e->valid = 1;
 }
+/* Remove exactly one descriptor without invalidating unrelated hot keys.
+ * Every cached index greater than the removed slot shifts down by one.
+ * The old global serial++ on each LRU eviction made *all* hot keys cold
+ * (and multiplied TEX0/CLUT lookup costs in battle). The epoch/page-
+ * generation checks still guard changes to GS texture contents. */
+static inline unsigned Psp_TexReuseOnErase(PspTexReuse *entries,
+                                           unsigned slots,
+                                           unsigned removed,
+                                           uint32_t currentSerial) {
+    unsigned i, repaired=0u;
+    if (!entries) return 0;
+    for(i=0u;i<slots;i++) {
+        PspTexReuse *e=&entries[i];
+        if (!e->valid || e->serial != currentSerial) continue;
+        if (e->index==removed) {
+            e->valid=0; /* descriptor was evicted */
+            ++repaired;
+        } else if(e->index>removed) {
+            --e->index; /* memmove() shifts existing descriptors */
+            ++repaired;
+        }
+    }
+    return repaired;
+}
+
 #endif

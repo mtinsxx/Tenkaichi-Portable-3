@@ -84,6 +84,13 @@ jobs:
           gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/psp port/psp/test_fb_lookup_policy.c -o /tmp/tp3-fb-read
           /tmp/tp3-fb-read
 
+      - name: Test PSP framebuffer snapshot pool and texture cache compaction
+        run: |
+          gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/psp port/psp/test_fb_snapshot_recycle.c -o /tmp/tp3-fb-pool
+          /tmp/tp3-fb-pool
+          gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/psp port/psp/test_tex_reuse_compaction.c -o /tmp/tp3-hot-tex-rebase
+          /tmp/tp3-hot-tex-rebase
+
       - name: Test PSP GU returned drawbuffer pointer normalization
         run: |
           gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_gu_swap_check.c -o /tmp/bt3-psp-gu-swap
