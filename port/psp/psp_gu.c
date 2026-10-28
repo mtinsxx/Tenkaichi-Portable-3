@@ -2722,24 +2722,29 @@ void GsGpu_FrameEnd(void) {
        Keep diagnostic logs bounded on very long battles. Never touch
        depth bits or GU state (previous depth=0 test broke fighters). */
     if (gPspLogAll && (sFrameStageInputs || sFrameFighterInputs) &&
-        (sPixelProbeShown < 24u || sFrame - sPixelProbeLastFrame >= 30u)) {
+        (sPixelProbeShown < 6u || sFrame - sPixelProbeLastFrame >= 60u)) {
         const volatile uint16_t *screen=(const volatile uint16_t *)
             (sVram+sMainDrawOffset);
+        const volatile uint16_t *other=(const volatile uint16_t *)
+            (sVram+(sMainDrawOffset==FB0_OFF?FB1_OFF:FB0_OFF));
         const volatile uint16_t *w0=(const volatile uint16_t *)(sVram+WORK_OFF);
         const volatile uint16_t *w1=(const volatile uint16_t *)(sVram+WORK2_OFF);
         PspGpuPixelProbe a=PspGpuProbe5551(screen,BUF_W,SCR_W,SCR_H);
+        PspGpuPixelProbe d=PspGpuProbe5551(other,BUF_W,SCR_W,SCR_H);
         PspGpuPixelProbe b=PspGpuProbe5551(w0,BUF_W,SCR_W,SCR_H);
         PspGpuPixelProbe c=PspGpuProbe5551(w1,BUF_W,SCR_W,SCR_H);
         /* Keep the last real-pixel sample in a separate summary so it
            survives as part of the next periodic report, not only the
            renderer's per-frame logs. No additional GPU/VRAM readback. */
-        sPixelProbeScreen=a; sPixelProbeWork0=b; sPixelProbeWork1=c;
+        sPixelProbeScreen=a; sPixelProbeOther=d;
+        sPixelProbeWork0=b; sPixelProbeWork1=c;
         sPixelProbeFrame=sFrame;
         sPixelProbeScene=sFrameStageInputs;
         sPixelProbeFighter=sFrameFighterInputs;
         ++sPixelProbeSampleCount;
-        Psp_Log("psp: LOG_ALL PIXELS post-GE frame=%u main-fbp=%d screen=%u/%u hash=%08x work0-owner=%u work0=%u/%u hash=%08x work1-owner=%u work1=%u/%u hash=%08x stage-input=%u fighter-input=%u\n",
-                sFrame, gGsMainFbp, a.colored,a.pixels,a.hash,
+        Psp_Log("psp: LOG_ALL PIXELS post-GE frame=%u main-fbp=%d draw=0x%x screen=%u/%u hash=%08x other-screen=%u/%u hash=%08x work0-owner=%u work0=%u/%u hash=%08x work1-owner=%u work1=%u/%u hash=%08x stage-input=%u fighter-input=%u\n",
+                sFrame, gGsMainFbp,sMainDrawOffset,
+                a.colored,a.pixels,a.hash,d.colored,d.pixels,d.hash,
                 sWorkOwnerFbp[0],b.colored,b.pixels,b.hash,
                 sWorkOwnerFbp[1],c.colored,c.pixels,c.hash,
                 sFrameStageInputs,sFrameFighterInputs);
@@ -3223,9 +3228,10 @@ void Psp_GuStats(unsigned out[4]) {
             sWorkOwnerFbp[0], sWorkOwnerFbp[1], (unsigned)(TEX_SIZE/1024u));
     sWorkPairSamples=sWorkPairOwnerMisses=0;
     if (gPspLogAll) {
-        Psp_Log("psp: LOG_ALL GPU-PROBE last-post-GE frame=%u samples-in-interval=%u screen-rgb=%u/%u hash=%08x work0-rgb=%u/%u hash=%08x work1-rgb=%u/%u hash=%08x stage-input=%u fighter-input=%u\n",
+        Psp_Log("psp: LOG_ALL GPU-PROBE last-post-GE frame=%u samples-in-interval=%u screen-rgb=%u/%u hash=%08x other-screen-rgb=%u/%u hash=%08x work0-rgb=%u/%u hash=%08x work1-rgb=%u/%u hash=%08x stage-input=%u fighter-input=%u\n",
                 sPixelProbeFrame, sPixelProbeSampleCount,
                 sPixelProbeScreen.colored,sPixelProbeScreen.pixels,sPixelProbeScreen.hash,
+                sPixelProbeOther.colored,sPixelProbeOther.pixels,sPixelProbeOther.hash,
                 sPixelProbeWork0.colored,sPixelProbeWork0.pixels,sPixelProbeWork0.hash,
                 sPixelProbeWork1.colored,sPixelProbeWork1.pixels,sPixelProbeWork1.hash,
                 sPixelProbeScene,sPixelProbeFighter);
