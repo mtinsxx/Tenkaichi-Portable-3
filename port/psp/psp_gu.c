@@ -59,6 +59,7 @@
 #include "psp_tex_lru.h"
 #include "psp_t8_native.h"
 #include "psp_native_t8_pack.h"
+#include "psp_native_t8_index_cache.h"
 #include "psp_native_gu_passes.h"
 #include "psp_texture_read_verify.h"
 #include "psp_fb_lookup_policy.h"
@@ -192,6 +193,12 @@ static void *sTexClut;      /* T8 CLUT attached to the last cache hit/miss */
 static uint32_t sTexClutTicket, sClutTicketNext;
 static unsigned sT8NativeNew, sT8NativeHits, sT8NativeSaved;
 static unsigned sT8RefVerified, sT8RefMismatch, sT8RefRebuilt;
+/* A single 256 KiB PSP-native linear index image. Only source GS pages
+ * key this cache; the live game CLUT is always decoded separately.
+ * This avoids adding another heap allocation in a memory-bound port. */
+static PspNativeT8Source sT8IndexSource;
+static uint8_t sT8IndexBuffer[512u*512u];
+static unsigned sT8IndexHits, sT8IndexMisses, sT8IndexStored;
 static unsigned sNativeT8PackLoaded, sNativeT8PackMissing, sNativeT8PackRejected;
 static unsigned sFbReadLookupPreserved;
 static Tex sTex[MAX_TEX];
@@ -924,7 +931,7 @@ static void *texture_get(int ctx, unsigned lodCap, int white_sprite,
     uint32_t cbp = (uint32_t)((t0 >> 37) & 0x3FFF), cpsm = (uint32_t)((t0 >> 51) & 15);
     uint32_t bits = (uint32_t)Gs_PsmBits(psm), pages, i, alphaNeed = 0;
     uint32_t readW, readH;
-    uint32_t gen = 0;
+    uint32_t gen = 0, indexGen = 0;
     Tex *t;
     uint32_t *px;
     int fmt;
@@ -992,6 +999,10 @@ static void *texture_get(int ctx, unsigned lodCap, int white_sprite,
     for (i = 0; i <= pages; i++) {
         gen = (gen ^ Gs_PageHash(tbp / 32 + i)) * 16777619u + i;
     }
+    /* The PSMT8 indices can be retained when the source pages have
+     * identical content, even if the CLUT changes. Do not use this for
+     * PSMT8H, 4-bit textures or white-font baked variants. */
+    indexGen = gen;
     if (bits <= 8) {
         gen = (gen ^ clut_hash(cbp, cpsm, bits == 8 ? 256 : 16)) * 16777619u;
     }
@@ -1052,31 +1063,43 @@ static void *texture_get(int ctx, unsigned lodCap, int white_sprite,
             idx=tex_malloc_pressure((size_t)readW*readH);
         }
         if (!idx) return NULL;
-        if (!psp_native_t8_try_read(tbp,tbw,gen,readW,readH,idx) &&
-            !Gs_VramReadIdx8(tbp,tbw,psm,readW,readH,idx,readW)) {
-            tex_temp_free(idx);
-            return NULL;
-        }
-        /* The accelerated GS PSMT8 decoder is checked against the scalar
-         * reference at 8x8/16x16 tile boundaries. A mismatch is a real
-         * decode failure; reconstruct from the reference instead of
-         * uploading a corrupted GE texture. Sampling is bounded to
-         * 64 pixels per NEW texture, not per draw or cache hit. */
-        {
-            PspT8Ref ref={tbp,tbw,psm};
-            unsigned badX=0u,badY=0u;
-            ++sT8RefVerified;
-            if(!PspT8_CompareSamples(idx,readW,readH,readW,
-                    psp_t8_ref_sample,&ref,&badX,&badY)) {
-                unsigned x,y;
-                ++sT8RefMismatch;
-                if(sT8RefMismatch<=4u)
-                    Psp_Log("psp: PSMT8 reference mismatch tbp=%u tbw=%u cbp=%u size=%ux%u pixel=%u,%u; rebuilding\n",
-                        tbp,tbw,cbp,readW,readH,badX,badY);
-                for(y=0;y<readH;y++) for(x=0;x<readW;x++)
-                    idx[y*readW+x]=(uint8_t)Gs_VramRead(tbp,tbw,psm,x,y);
-                ++sT8RefRebuilt;
+        /* Source page hash is captured BEFORE CLUT hashing. The last
+         * complete PSMT8 source image can be reused even when the GS
+         * streamed a different palette to the SAME TEX0 source. */
+        if (PspNativeT8Source_Matches(&sT8IndexSource,tbp,tbw,
+                       indexGen,readW,readH)) {
+            memcpy(idx,sT8IndexBuffer,(size_t)readW*readH);
+            ++sT8IndexHits;
+        } else {
+            ++sT8IndexMisses;
+            if (!psp_native_t8_try_read(tbp,tbw,gen,readW,readH,idx) &&
+                !Gs_VramReadIdx8(tbp,tbw,psm,readW,readH,idx,readW)) {
+                tex_temp_free(idx);
+                return NULL;
             }
+            /* Verify indices against the scalar GS reference before
+             * storing them. Cached data is checked by a full source
+             * page hash on each later reuse, never just a frame tick. */
+            {
+                PspT8Ref ref={tbp,tbw,psm};
+                unsigned badX=0u,badY=0u;
+                ++sT8RefVerified;
+                if(!PspT8_CompareSamples(idx,readW,readH,readW,
+                        psp_t8_ref_sample,&ref,&badX,&badY)) {
+                    unsigned x,y;
+                    ++sT8RefMismatch;
+                    if(sT8RefMismatch<=4u)
+                        Psp_Log("psp: PSMT8 reference mismatch tbp=%u tbw=%u cbp=%u size=%ux%u pixel=%u,%u; rebuilding\n",
+                            tbp,tbw,cbp,readW,readH,badX,badY);
+                    for(y=0;y<readH;y++) for(x=0;x<readW;x++)
+                        idx[y*readW+x]=(uint8_t)Gs_VramRead(tbp,tbw,psm,x,y);
+                    ++sT8RefRebuilt;
+                }
+            }
+            memcpy(sT8IndexBuffer,idx,(size_t)readW*readH);
+            PspNativeT8Source_Remember(&sT8IndexSource,tbp,tbw,
+                              indexGen,readW,readH);
+            ++sT8IndexStored;
         }
         if (readW != tw || readH != th)
             Psp_LodSubsample8(idx,readW,readH,tw,th);
@@ -3223,6 +3246,9 @@ void Psp_GuStats(unsigned out[4]) {
     Psp_Log("psp: PSMT8 differential decode: checked=%u mismatched=%u rebuilt-from-scalar=%u screen-texture-lookup-preserved=%u\n",
             sT8RefVerified,sT8RefMismatch,sT8RefRebuilt,sFbReadLookupPreserved);
     sT8RefVerified=sT8RefMismatch=sT8RefRebuilt=sFbReadLookupPreserved=0;
+    Psp_Log("psp: native T8 source index reuse: hits=%u misses=%u stored=%u (CLUT always live; GS source pages checked)\n",
+            sT8IndexHits,sT8IndexMisses,sT8IndexStored);
+    sT8IndexHits=sT8IndexMisses=sT8IndexStored=0;
     Psp_Log("psp: offline native T8 packs: loaded=%u not-found=%u rejected=%u (opt-in, GS page+CLUT hash checked)\n",
             sNativeT8PackLoaded,sNativeT8PackMissing,sNativeT8PackRejected);
     sNativeT8PackLoaded=sNativeT8PackMissing=sNativeT8PackRejected=0;
