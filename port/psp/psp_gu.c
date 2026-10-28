@@ -60,6 +60,7 @@
 #include "psp_t8_native.h"
 #include "psp_native_t8_pack.h"
 #include "psp_native_t8_index_cache.h"
+#include "psp_t8_palette_refresh.h"
 #include "psp_native_gu_passes.h"
 #include "psp_texture_read_verify.h"
 #include "psp_fb_lookup_policy.h"
@@ -137,6 +138,7 @@ typedef struct Vtx {         /* what the engine reads: texture coordinates, colo
 typedef struct Tex {
     uint64_t tex0, texa;
     uint32_t gen;
+    uint32_t sourceGen;      /* PSMT8 source-only page hash, excludes CLUT */
     void *ptr;               /* VRAM or aligned main RAM, readable by GE */
     void *heap_alloc;        /* malloc base when stored in main RAM */
     void *clut;              /* 256 RGBA8888 entries, NULL for expanded textures */
@@ -201,6 +203,7 @@ static uint8_t sT8IndexBuffer[PSP_NATIVE_T8_CACHE_SLOTS][PSP_NATIVE_T8_SLOT_BYTE
 static uint32_t sT8IndexClock;
 static unsigned sT8IndexHits, sT8IndexMisses, sT8IndexStored;
 static unsigned sT8IndexEvicted, sT8IndexOversize;
+static unsigned sT8ClutRefreshed, sT8ClutRefreshBlocked;
 static unsigned sNativeT8PackLoaded, sNativeT8PackMissing, sNativeT8PackRejected;
 static unsigned sFbReadLookupPreserved;
 static Tex sTex[MAX_TEX];
@@ -937,6 +940,7 @@ static void *texture_get(int ctx, unsigned lodCap, int white_sprite,
     Tex *t;
     uint32_t *px;
     int fmt;
+    int paletteRefreshCandidate=-1;
     /* Sampling the lookup one time in 32 avoids adding a clock syscall
        to every cache hit during the game's thousands of GS draws. */
     int sampleKey = ((++sProfKeyCalls & 31u) == 0);
@@ -1009,6 +1013,25 @@ static void *texture_get(int ctx, unsigned lodCap, int white_sprite,
         gen = (gen ^ clut_hash(cbp, cpsm, bits == 8 ? 256 : 16)) * 16777619u;
     }
     for (i = 0; i < sTexCount; i++) {
+        /* When the PS2 updates only the palette, a completed-frame
+         * native GU_T8 texture may safely keep its swizzled index
+         * allocation and only refresh its CLUT. Do not modify a
+         * texture still referenced by the current GE command list. */
+        if(psm==0x13u && !white_sprite && sTex[i].fmt==GU_PSM_T8 &&
+           sTex[i].clut!=NULL && sTex[i].tex0==t0 &&
+           sTex[i].texa==texa && sTex[i].sourceGen==indexGen &&
+           sTex[i].w==tw && sTex[i].h==th &&
+           sTex[i].gen!=gen) {
+            PspT8PaletteIdentity identity={
+                sTex[i].tex0,sTex[i].texa,sTex[i].sourceGen,
+                sTex[i].w,sTex[i].h,sTex[i].last,1,sTex[i].white_sprite
+            };
+            if(PspT8Palette_CanRefresh(&identity,t0,texa,indexGen,
+                                      tw,th,sFrame))
+                paletteRefreshCandidate=(int)i;
+            else
+                ++sT8ClutRefreshBlocked;
+        }
         if (sTex[i].tex0 == t0 && sTex[i].texa == texa && sTex[i].gen == gen &&
             sTex[i].w == tw && sTex[i].h == th &&
             sTex[i].white_sprite == white_sprite) {
@@ -1040,6 +1063,39 @@ static void *texture_get(int ctx, unsigned lodCap, int white_sprite,
     if (sampleKey) {
         sProfKeySampleUs += Psp_TimeUs() - keyStartUs;
         ++sProfKeySamples;
+    }
+    /* Palette-only GPU resource update on a completed frame: no new
+     * texture memory, no GS PSMT8 index decoding and no swizzle.
+     * Scene draw ordering is unchanged. Original VIF/CLUT semantics
+     * still come from GS memory and TEXA. */
+    if(paletteRefreshCandidate>=0) {
+        unsigned k;
+        Tex *reused=&sTex[paletteRefreshCandidate];
+        uint32_t *palette=(uint32_t *)reused->clut;
+        for(k=0;k<256u;k++) {
+            unsigned e=PspT8_Csm1Index(k);
+            uint32_t c=Gs_VramRead(cbp,1,cpsm,e&15u,e>>4);
+            palette[k]=PspT8_GuPaletteColor(Gs_Expand(c,cpsm));
+        }
+        if(reused->heap_alloc)
+            sceKernelDcacheWritebackRange(palette,1024u);
+        sceGuTexFlush();
+        reused->gen=gen;
+        reused->last=sFrame;
+        reused->useTicket=++sTexUseTicket;
+        reused->clutTicket=++sClutTicketNext;
+        Psp_TexReuseRemember(&sTexReuse[reuseSlot],t0,texa,
+                   gGsPspTextureEpoch,sTexSerial,lodCap,
+                   white_sprite,(unsigned)paletteRefreshCandidate);
+        *tw_out=(int)reused->w;
+        *th_out=(int)reused->h;
+        *fmt_out=reused->fmt;
+        sTexSwizzled=reused->swizzled;
+        sTexClut=palette;
+        sTexClutTicket=reused->clutTicket;
+        ++sT8ClutRefreshed;
+        ++sTexCacheHits;
+        return reused->ptr;
     }
     ++sTexCacheMisses;
     decodeStartUs = Psp_TimeUs();
@@ -1145,6 +1201,7 @@ static void *texture_get(int ctx, unsigned lodCap, int white_sprite,
                  gGsPspTextureEpoch,sTexSerial,lodCap,
                  white_sprite,(unsigned)(sTexCount-1));
         t->tex0=t0; t->texa=texa; t->gen=gen;
+        t->sourceGen=indexGen;
         t->ptr=ptr; t->heap_alloc=heap_alloc; t->clut=palette;
         t->w=tw; t->h=th; t->bytes=allocated;
         t->fmt=GU_PSM_T8; t->swizzled=tiled;
@@ -3273,6 +3330,9 @@ void Psp_GuStats(unsigned out[4]) {
             (unsigned)PSP_NATIVE_T8_CACHE_SLOTS);
     sT8IndexHits=sT8IndexMisses=sT8IndexStored=0;
     sT8IndexEvicted=sT8IndexOversize=0;
+    Psp_Log("psp: native T8 palette-only refresh: reused=%u in-flight-blocked=%u (source hash unchanged, GE fenced)\n",
+            sT8ClutRefreshed,sT8ClutRefreshBlocked);
+    sT8ClutRefreshed=sT8ClutRefreshBlocked=0;
     Psp_Log("psp: offline native T8 packs: loaded=%u not-found=%u rejected=%u (opt-in, GS page+CLUT hash checked)\n",
             sNativeT8PackLoaded,sNativeT8PackMissing,sNativeT8PackRejected);
     sNativeT8PackLoaded=sNativeT8PackMissing=sNativeT8PackRejected=0;
