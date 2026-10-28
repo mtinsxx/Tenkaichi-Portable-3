@@ -738,7 +738,7 @@ static int snapshot_target(int slot) {
     }
     flush(); /* submit the last triangle BEFORE the GE copy */
     sceGuCopyImage(GU_PSM_5551,0,0,PSP_GS_FB_COPY_W,
-                   PSP_GS_FB_COPY_H,BUF_W,t->color,
+                   PSP_GS_FB_COPY_H,BUF_W,(void *)PspVram_GePointer(t->color),
                    0,0,BUF_W,t->snapshot);
     sceGuTexFlush(); /* later GE texture reads must observe this copy */
     PspGsFb_Saved(&t->snapVersion,sFrame,t->gen);
@@ -1521,7 +1521,7 @@ static void state_apply(void) {
                Palette and index pixels are in one cache-owned allocation.
                No palette is reused after its texture is evicted. */
             sceGuClutMode(GU_PSM_8888,0,255,0);
-            sceGuClutLoad(32,sSt.clut);
+            sceGuClutLoad(32,PspVram_GePointer(sSt.clut));
         }
         /* A work framebuffer can be changed between two reads of the
            SAME address; therefore always invalidate on a FB texture bind,
@@ -1535,7 +1535,8 @@ static void state_apply(void) {
         if (first || p->tex != sSt.tex || p->tw != sSt.tw ||
             p->th != sSt.th || p->fmt != sSt.fmt ||
             p->tmode != sSt.tmode) {
-            sceGuTexImage(0, sSt.tw, sSt.th, sSt.tw, sSt.tex);
+            sceGuTexImage(0, sSt.tw, sSt.th, sSt.tw,
+                          PspVram_GePointer(sSt.tex));
         }
         if (first || p->tex == NULL || sSt.tfx != p->tfx ||
             sSt.tcc != p->tcc) {
@@ -2439,8 +2440,9 @@ static void Psp_StageComposeBeforeFighter(int ctx) {
        geometry remains on dst and appears in front of this background.
        No copying to a render target currently aliased to the source. */
     flush();
-    sceGuCopyImage(GU_PSM_5551,0,0,SCR_W,SCR_H,BUF_W,(void *)src,
-                   0,0,BUF_W,(void *)dst);
+    sceGuCopyImage(GU_PSM_5551,0,0,SCR_W,SCR_H,BUF_W,
+                   (void *)PspVram_GeAddress(src),
+                   0,0,BUF_W,(void *)PspVram_GeAddress(dst));
     sceGuTexFlush();
     sStageComposeFrame=sFrame;
     sStageComposeDest=dst;

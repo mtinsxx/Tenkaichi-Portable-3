@@ -11,6 +11,21 @@
 static inline uintptr_t PspVram_Uncached(uintptr_t addr) {
     return addr | (uintptr_t)UINT32_C(0x40000000);
 }
+/* The CPU uses the uncached 0x44000000 mirror to inspect/write eDRAM.
+ * The GE command registers must name the physical 0x04000000 VRAM range.
+ * sceGuCopyImage encodes the top address byte in TRANSFER_*_W; passing
+ * the CPU alias there also forwards the CPU-only 0x40000000 bit.
+ * Normalize ONLY pointers inside the PSP's 2 MiB eDRAM.
+ * Never rewrite PSP main RAM, aligned texture heap or GU list pointers. */
+static inline uintptr_t PspVram_GeAddress(uintptr_t addr) {
+    if ((addr & (uintptr_t)UINT32_C(0xffe00000)) ==
+        (uintptr_t)PSP_VRAM_UNCACHED_BASE)
+        return addr & ~(uintptr_t)UINT32_C(0x40000000);
+    return addr;
+}
+static inline const void *PspVram_GePointer(const void *p) {
+    return (const void *)PspVram_GeAddress((uintptr_t)p);
+}
 /* A 5551 PSP surface is not an 8H/4HL/4HH palette-index buffer.
  * A 16-bit GPU backing cannot be reinterpreted as those 32-bit GS
  * storage planes. Fall back to GS VRAM decoding instead; if the
