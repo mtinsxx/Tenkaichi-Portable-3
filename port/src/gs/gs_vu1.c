@@ -33,6 +33,7 @@
 #ifdef PORT_PSP
 #include "psp_vif_subword.h"
 #include "psp_vu_profile.h"
+#include "psp_vu1_predecode.h"
 /* PSP release/debug EBOOTs have NO external environment variable
  * configuration (bt3.txt was removed). VU1 dispatch runs thousands
  * of times per battle and previously called getenv repeatedly to
@@ -78,6 +79,15 @@ static unsigned sStatRuns, sStatInstr, sStatKicks;
 static unsigned sPspFastUnpackVectors, sPspGenericUnpackVectors;
 static unsigned sPspNativeSubwordVectors;
 static unsigned sPspVuRunCalls, sPspVuRunSamples;
+/* Executable VU microcode is uploaded with VIF MPG. Cache only immutable
+ * bitfield decoding, never VU register state or dynamic branches. */
+static PspVu1Instruction sPspVu1Decoded[PSP_VU1_INSTRUCTION_COUNT];
+static unsigned sPspVuDecodedWords, sPspVuDecodedExecuted;
+void GsVu1_PspPredecodePerf(unsigned out[2]) {
+    out[0]=sPspVuDecodedWords;
+    out[1]=sPspVuDecodedExecuted;
+    sPspVuDecodedWords=sPspVuDecodedExecuted=0u;
+}
 static unsigned long long sPspVuRunSampleUs;
 static PspVuProfileBucket sPspVuBuckets[PSP_VU_BUCKET_COUNT];
 static unsigned long long sPspVuBucketSampleUs[PSP_VU_BUCKET_COUNT];
@@ -143,7 +153,15 @@ void GsVu1_Program(uint32_t addr, const uint32_t *words, uint32_t count) {
     /* which program is loaded: identified by its size in instructions (an upload at 0 starts a new one) */
     sProgSize = addr == 0 ? count / 2 : sProgSize + count / 2;
     for (i = 0; i < count; i++) {
-        memcpy(&vu.micro[((addr * 8) + i * 4) & 0x3FFC], &words[i], 4);
+        unsigned byteOffset = ((addr * 8) + i * 4) & 0x3FFCu;
+        memcpy(&vu.micro[byteOffset], &words[i], 4);
+#ifdef PORT_PSP
+        /* The next MSCAL runs compiled decode fields. A half-instruction
+         * MPG upload changes only the relevant 32-bit half, and the
+         * untouched half remains from the previous VU image. */
+        PspVu1_RefreshInstruction(sPspVu1Decoded,vu.micro,byteOffset/8u);
+        ++sPspVuDecodedWords;
+#endif
     }
 }
 
@@ -489,8 +507,14 @@ static void run(uint32_t start) {
         int wacc = 0, lower = 1;
         uint32_t next = (vu.pc + 1) & 0x7FF;
 
+#ifdef PORT_PSP
+        const PspVu1Instruction *decoded=&sPspVu1Decoded[vu.pc];
+        lo=decoded->lo;
+        hi=decoded->hi;
+#else
         memcpy(&lo, &vu.micro[vu.pc * 8], 4);
         memcpy(&hi, &vu.micro[vu.pc * 8 + 4], 4);
+#endif
         vu.cycle++;
         sStatInstr++;
         if (vu.qReady != 0 && vu.cycle >= vu.qReady) {
@@ -502,12 +526,21 @@ static void run(uint32_t start) {
             vu.clipHead = (vu.clipHead + 1) & 7;
             vu.clipCount--;
         }
+#ifdef PORT_PSP
+        dest=decoded->dest;
+        ft=decoded->ft;
+        fs=decoded->fs;
+        fd=decoded->fd;
+        op=decoded->op;
+        bc=decoded->bc;
+#else
         dest = (hi >> 21) & 15;
         ft = (hi >> 16) & 31;
         fs = (hi >> 11) & 31;
         fd = (hi >> 6) & 31;
         op = hi & 0x3F;
         bc = hi & 3;
+#endif
         if (hi & 0x80000000u) { /* I bit: the lower word is a float for the I register */
             memcpy(&vu.i, &lo, 4);
             lower = 0;
@@ -610,9 +643,16 @@ static void run(uint32_t start) {
 upper_done:
         /* ---- lower instruction ---- */
         if (lower && lo != 0x8000033Cu) { /* 0x8000033C: the lower NOP (move vf0, vf0) */
+#ifdef PORT_PSP
+            uint32_t lop=decoded->lop, it=decoded->it, is=decoded->is;
+            uint32_t id=decoded->id, ld=decoded->ld;
+            int32_t imm11=decoded->imm11;
+            uint32_t imm15=decoded->imm15;
+#else
             uint32_t lop = lo >> 25, it = (lo >> 16) & 31, is = (lo >> 11) & 31, id = (lo >> 6) & 31, ld = (lo >> 21) & 15;
             int32_t imm11 = (int32_t)(lo << 21) >> 21;
             uint32_t imm15 = ((lo >> 10) & 0x7800) | (lo & 0x7FF);
+#endif
 #define LDEST(n) ((ld >> (3 - (n))) & 1)
 #define MEM(a) (&vu.mem[((uint32_t)(a) & 0x3FF) * 16])
 #define SETVI(r, v) do { if ((r) & 15) { vu.vi[(r) & 15] = (uint16_t)(v); } } while (0)
@@ -702,6 +742,7 @@ upper_done:
             sProg[slot].kicks += sStatKicks - kbefore;
 #ifdef PORT_PSP
             sPspVuBuckets[pspBucket].instructions += sStatInstr - before;
+            sPspVuDecodedExecuted += sStatInstr - before;
             if (pspSampleThisRun) {
                 unsigned long long dt = Psp_TimeUs() - pspSampleStartUs;
                 sPspVuRunSampleUs += dt;
@@ -727,6 +768,7 @@ upper_done:
     }
 #ifdef PORT_PSP
     sPspVuBuckets[pspBucket].instructions += sStatInstr - before;
+    sPspVuDecodedExecuted += sStatInstr - before;
     if (pspSampleThisRun) {
         unsigned long long dt = Psp_TimeUs() - pspSampleStartUs;
         sPspVuRunSampleUs += dt;
