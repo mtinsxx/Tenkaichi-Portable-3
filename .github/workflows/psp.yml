@@ -104,6 +104,11 @@ jobs:
           gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_scene_pair.c -o /tmp/bt3-psp-scene-pair
           /tmp/bt3-psp-scene-pair
 
+      - name: Test PSP invalid fread crash guard
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_io_guard.c -o /tmp/tp3-io-guard
+          /tmp/tp3-io-guard
+
       - name: Test PSP GU returned drawbuffer pointer normalization
         run: |
           gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_gu_swap_check.c -o /tmp/bt3-psp-gu-swap
