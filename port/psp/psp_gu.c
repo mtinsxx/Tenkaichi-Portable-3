@@ -3171,6 +3171,13 @@ void Psp_GuStats(unsigned out[4]) {
        If few vectors use it, the next optimization should target the
        VU1 instruction interpreter rather than the VIF unpack loop. */
     {
+        unsigned microPerf[2];
+        extern void GsVu1_PspPredecodePerf(unsigned out[2]);
+        GsVu1_PspPredecodePerf(microPerf);
+        Psp_Log("psp: VU1 uploaded micro-op predecode: refreshed-words=%u interpreted-instructions=%u immutable-fields=yes (GS semantics unchanged)\n",
+                microPerf[0],microPerf[1]);
+    }
+    {
         unsigned vuPerf[5];
         extern void GsVu1_PspPerf(unsigned out[5]);
         unsigned nativeSubword;
