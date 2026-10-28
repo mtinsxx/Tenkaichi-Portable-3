@@ -77,6 +77,13 @@ jobs:
           gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_io_guard.c -o /tmp/tp3-io-guard
           /tmp/tp3-io-guard
 
+      - name: Test PSMT8 reference sampling and GS read-only framebuffer lookup
+        run: |
+          gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/psp port/psp/test_texture_read_verify.c -o /tmp/tp3-t8-diff
+          /tmp/tp3-t8-diff
+          gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/psp port/psp/test_fb_lookup_policy.c -o /tmp/tp3-fb-read
+          /tmp/tp3-fb-read
+
       - name: Test PSP GU returned drawbuffer pointer normalization
         run: |
           gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_gu_swap_check.c -o /tmp/bt3-psp-gu-swap
