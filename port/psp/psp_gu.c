@@ -334,6 +334,8 @@ static unsigned sFbAliasUnrendered, sFbAliasSelf, sFbWorkOwnerChanges;
 static unsigned sFbPsmAliasRejected, sGsAfailSecondPass, sGsAfailHudFallback;
 static unsigned sGsUploadSnapshot, sGsUploadUnsupported;
 static unsigned sStageCompositions, sStageComposeRejected, sStageTagged;
+static unsigned sStageRejectOffscreen,sStageRejectSame,sStageRejectStale;
+static unsigned sStageRejectOwner,sStageRejectUnready,sStageRejectAlready,sStageRejectOther;
 static unsigned sTargetRebindInvalid, sTargetScreenCleared;
 extern int gPspTargetFreshness;
 extern int gGsMainFbp; /* gs_sony.c: the frame buffer the frame is drawn into */
@@ -2218,6 +2220,13 @@ static void Psp_StageComposeBeforeFighter(int ctx) {
         sourceReady ? sStageImage.written : 0u,sStageImage.written,
         src,dst,screenDest,sourceReady,ownerValid,already)) {
         ++sStageComposeRejected;
+        if (!screenDest) ++sStageRejectOffscreen;
+        else if (src==dst) ++sStageRejectSame;
+        else if ((unsigned)(sFrame-sStageImage.frame)>1u) ++sStageRejectStale;
+        else if (!ownerValid) ++sStageRejectOwner;
+        else if (!sourceReady) ++sStageRejectUnready;
+        else if (already) ++sStageRejectAlready;
+        else ++sStageRejectOther;
         return;
     }
     /* One ordered GE copy of 480x272 5551 pixels, never a CPU loop.
@@ -3173,6 +3182,12 @@ void Psp_GuStats(unsigned out[4]) {
     Psp_Log("psp: stage-to-fighter background copy: staged=%u copied=%u guarded-skip=%u (native VU1, same/previous frame, GE 5551)\n",
             sStageTagged,sStageCompositions,sStageComposeRejected);
     sStageTagged=sStageCompositions=sStageComposeRejected=0;
+    Psp_Log("psp: stage compositing rejects: offscreen=%u same-surface=%u stale=%u owner-lost=%u invalid-source=%u already-copied=%u other=%u\n",
+         sStageRejectOffscreen,sStageRejectSame,sStageRejectStale,
+         sStageRejectOwner,sStageRejectUnready,sStageRejectAlready,
+         sStageRejectOther);
+    sStageRejectOffscreen=sStageRejectSame=sStageRejectStale=0;
+    sStageRejectOwner=sStageRejectUnready=sStageRejectAlready=sStageRejectOther=0;
     Psp_Log("psp: fb-alias: valid=%u fallback=%u reupload=%u unrendered=%u self=%u scratch-owner-changes=%u\n",
             sFbAliasHit, sFbAliasFallback, sFbAliasReupload,
             sFbAliasUnrendered, sFbAliasSelf, sFbWorkOwnerChanges);
