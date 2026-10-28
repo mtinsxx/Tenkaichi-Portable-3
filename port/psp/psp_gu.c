@@ -59,6 +59,7 @@
 #include "psp_tex_lru.h"
 #include "psp_t8_native.h"
 #include "psp_native_t8_pack.h"
+#include "psp_native_gu_passes.h"
 #include "psp_texture_read_verify.h"
 #include "psp_fb_lookup_policy.h"
 #include "psp_gpu_probe.h"
@@ -231,6 +232,8 @@ static unsigned sNativeStageFastStarts, sNativeStageFastTriangles;
 /* Same no-state-change optimization for the two fighter VU1 layers:
    each layer has one TEX0/PRIM; reuse the first triangle's proven state. */
 static unsigned sNativeFighterFastStarts, sNativeFighterFastTriangles;
+static unsigned sGuNativePass=PSP_GU_PASS_NONE;
+static unsigned sGuNativePassBarriers,sGuNativePassStage,sGuNativePassFighter,sGuNativePassSprites;
 /* Number of full strips provably clipped before the VU1 interpreter.
    No visible triangles can be removed by the conservative proof. */
 static unsigned sNativeStageCulledStrips, sNativeStageCulledVerts;
@@ -1601,6 +1604,20 @@ static void flush(void) {
     sBatches++;
 }
 
+/* All GPU primitives still preserve original GS submission order.
+ * Separate GE batches only where native stage, actor or sprite
+ * ownership changes. No arbitrary sorting across GS depth, alpha,
+ * framebuffer snapshots or shader effects. */
+static void psp_gu_mark_pass(unsigned pass) {
+    if(PspGuPass_MustFlush(sGuNativePass,pass,(unsigned)sVbCount)) {
+        flush();
+        ++sGuNativePassBarriers;
+    }
+    sGuNativePass=PspGuPass_Next(pass);
+    if(pass==PSP_GU_PASS_STAGE) ++sGuNativePassStage;
+    else if(pass==PSP_GU_PASS_FIGHTER) ++sGuNativePassFighter;
+    else if(pass==PSP_GU_PASS_SPRITE) ++sGuNativePassSprites;
+}
 void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
     uint64_t prim = gGs.prim, t0 = gGs.tex0[ctx], test = gGs.test[ctx], sc = gGs.scissor[ctx];
     uint64_t cl = gGs.clamp[ctx], frame = gGs.frame[ctx];
@@ -1636,6 +1653,7 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
         return;
     }
     sDraws++;
+    if(type==6) psp_gu_mark_pass(PSP_GU_PASS_SPRITE);
     /* Reject GS pixels with no possible scissor coverage before doing
        expensive texture decode, framebuffer aliasing or GE state setup.
        This affects stage, fighter, menu and HUD alike. Do not reject
@@ -2525,6 +2543,7 @@ int Psp_Stage4Prepare(int ctx, const float *vertices, uint32_t count,
    winding, flat-shading and the existing affine ST/Q behavior. */
 static void Psp_NativeEmitTriangle(PspStageFastBatch *b, int ctx,
                                    const GsVertex tri[3], int fighter) {
+    psp_gu_mark_pass(fighter ? PSP_GU_PASS_FIGHTER : PSP_GU_PASS_STAGE);
     if (!fighter) Psp_DiagAllIncident(PSP_DIAG_STAGE_TRIANGLE,ctx,0);
     if (PspGsStripSkip_Next(&b->stableSkip)) {
         /* Same immutable GS registers throughout the native VU batch.
@@ -3164,6 +3183,9 @@ void Psp_GuStats(unsigned out[4]) {
     Psp_Log("psp: GU swap verification: mismatch=%u unrecognized-return=%u swap_from_sdk=%d\n",
             sGuSwapMismatch, sGuSwapUnknown, gPspSwapFromSdk);
     sGuSwapMismatch = sGuSwapUnknown = 0;
+    Psp_Log("psp: native PSP GU ordered passes: stage-triangles=%u fighter-triangles=%u sprites=%u transition-barriers=%u (original GS order retained)\n",
+            sGuNativePassStage,sGuNativePassFighter,sGuNativePassSprites,sGuNativePassBarriers);
+    sGuNativePassStage=sGuNativePassFighter=sGuNativePassSprites=sGuNativePassBarriers=0;
     Psp_Log("psp: GU state batching: %u batches, %u changed states, %u draw-target switches\n",
             sGuStateCalls, sGuStateChanges, sGuTargetChanges);
     sGuStateCalls = sGuStateChanges = sGuTargetChanges = 0;
