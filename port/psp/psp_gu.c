@@ -58,6 +58,7 @@
 #include "psp_tex_reuse.h"
 #include "psp_tex_lru.h"
 #include "psp_t8_native.h"
+#include "psp_native_t8_pack.h"
 #include "psp_texture_read_verify.h"
 #include "psp_fb_lookup_policy.h"
 #include "psp_gpu_probe.h"
@@ -190,6 +191,7 @@ static void *sTexClut;      /* T8 CLUT attached to the last cache hit/miss */
 static uint32_t sTexClutTicket, sClutTicketNext;
 static unsigned sT8NativeNew, sT8NativeHits, sT8NativeSaved;
 static unsigned sT8RefVerified, sT8RefMismatch, sT8RefRebuilt;
+static unsigned sNativeT8PackLoaded, sNativeT8PackMissing, sNativeT8PackRejected;
 static unsigned sFbReadLookupPreserved;
 static Tex sTex[MAX_TEX];
 static int sTexCount;
@@ -854,6 +856,45 @@ static uint32_t clut_hash(uint32_t cbp, uint32_t cpsm, uint32_t count) {
     return h;
 }
 
+/* Opt-in offline texture conversion: users extract their own assets
+ * locally and put a version-checked pack under PSP/GAME/BT3/native.
+ * We never try to open any per-texture file unless the enable marker
+ * exists, so ordinary users never suffer storage I/O on cache misses.
+ * The 64-sample scalar differential below still checks every loaded
+ * pack against the CURRENT GS texture, preventing stale/palette
+ * incompatibility from reaching the GPU. */
+static int psp_native_t8_try_read(uint32_t tbp,uint32_t tbw,uint32_t gen,
+              unsigned w,unsigned h,uint8_t *dst) {
+    static int enabled=-1;
+    char path[192];
+    FILE *fp;
+    PspNativeT8Header header;
+    size_t bytes;
+    if(enabled<0) {
+        fp=fopen("ms0:/PSP/GAME/BT3/native/enable.txt","rb");
+        enabled=fp!=NULL;
+        if(fp) {fclose(fp);Psp_Log("psp: optional native PSMT8 pack reader enabled\\n");}
+    }
+    if(!enabled || !dst || !w || !h || w>512u || h>512u) return 0;
+    snprintf(path,sizeof(path),
+             "ms0:/PSP/GAME/BT3/native/t8_%04x_%08x_%ux%u.tp8",
+             tbp,gen,w,h);
+    fp=fopen(path,"rb");
+    if(!fp) {++sNativeT8PackMissing;return 0;}
+    bytes=(size_t)w*h;
+    if(fread(&header,1,sizeof(header),fp)!=sizeof(header) ||
+       !PspNativeT8_Match(&header,tbp,tbw,gen,w,h) ||
+       fread(dst,1,bytes,fp)!=bytes ||
+       PspNativeT8_Fnv(dst,bytes)!=header.dataFnv ||
+       fgetc(fp)!=EOF) {
+        ++sNativeT8PackRejected;
+        fclose(fp);
+        return 0;
+    }
+    fclose(fp);
+    ++sNativeT8PackLoaded;
+    return 1;
+}
 /* GS memory -> a PSP texture for the current TEX0. NULL when there is no room. */
 /* The stored bits of a rectangle of GS memory, as gs_core.c has them. The Vita has block-at-a-time versions of
    these two in a Vita-only part of that file (one address computation per block instead of per pixel); the PSP
@@ -1002,7 +1043,8 @@ static void *texture_get(int ctx, unsigned lodCap, int white_sprite,
             idx=tex_malloc_pressure((size_t)readW*readH);
         }
         if (!idx) return NULL;
-        if (!Gs_VramReadIdx8(tbp,tbw,psm,readW,readH,idx,readW)) {
+        if (!psp_native_t8_try_read(tbp,tbw,gen,readW,readH,idx) &&
+            !Gs_VramReadIdx8(tbp,tbw,psm,readW,readH,idx,readW)) {
             tex_temp_free(idx);
             return NULL;
         }
@@ -3153,6 +3195,9 @@ void Psp_GuStats(unsigned out[4]) {
     Psp_Log("psp: PSMT8 differential decode: checked=%u mismatched=%u rebuilt-from-scalar=%u screen-texture-lookup-preserved=%u\n",
             sT8RefVerified,sT8RefMismatch,sT8RefRebuilt,sFbReadLookupPreserved);
     sT8RefVerified=sT8RefMismatch=sT8RefRebuilt=sFbReadLookupPreserved=0;
+    Psp_Log("psp: offline native T8 packs: loaded=%u not-found=%u rejected=%u (opt-in, GS page+CLUT hash checked)\\n",
+            sNativeT8PackLoaded,sNativeT8PackMissing,sNativeT8PackRejected);
+    sNativeT8PackLoaded=sNativeT8PackMissing=sNativeT8PackRejected=0;
     Psp_Log("psp: texture cache: entries=%d/%d vram=%u KB ram=%u KB peak=%u KB hits=%u misses=%u evicted=%u alloc-failed=%u oversized=%u\n",
             sTexCount, MAX_TEX, sTexMem / 1024u, sTexRamMem / 1024u,
             sTexRamPeak / 1024u, sTexCacheHits, sTexCacheMisses,
