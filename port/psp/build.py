@@ -263,7 +263,7 @@ FAST_WRAPS = "StgFrustum_TestBox StgFrustum_TestPart BtlTaskList_Update BtlTaskL
 # Vector-library functions with an exact faster equivalent (port/src/port_vufast.c).
 VUFAST_WRAPS = ""
 # The port's own entry points around the game's (headless.c, psp_main.c) and the renderer's hooks.
-PORT_WRAPS = "Progress_Main main exit Port_GsVif1Chain sceMpegGetPicture GsVu1_Call".split()
+PORT_WRAPS = "Progress_Main main exit Port_GsVif1Chain sceMpegGetPicture GsVu1_Call fread fopen".split()
 
 
 def link():
