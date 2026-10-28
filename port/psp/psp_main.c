@@ -366,7 +366,7 @@ int __wrap_main(int argc, char **argv) {
     sLog = fopen(HOME "/log.txt", "w");
     Psp_Log("======== new run ========\n");
     Psp_Log("psp: Dragon Ball Z BT3 (Tenkaichi3Decomp) for the PSP, built " __DATE__ " " __TIME__ "\n");
-    Psp_Log("psp: BUILD-ID TP3-PSP-T8-CLUT-REFRESH-20261028\n");
+    Psp_Log("psp: BUILD-ID TP3-STAGE399-NATIVE-EMPTY-20261028\n");
     Psp_Log("psp: multi-thread LOG_ALL mutex=%s (no config file)\n",
             sLogLock >= 0 ? "on" : "unavailable");
 

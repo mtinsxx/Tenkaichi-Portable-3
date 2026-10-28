@@ -34,6 +34,7 @@
 #include "psp_vif_subword.h"
 #include "psp_vu_profile.h"
 #include "psp_vu1_predecode.h"
+#include "psp_stage399_empty.h"
 /* PSP release/debug EBOOTs have NO external environment variable
  * configuration (bt3.txt was removed). VU1 dispatch runs thousands
  * of times per battle and previously called getenv repeatedly to
@@ -83,6 +84,12 @@ static unsigned sPspVuRunCalls, sPspVuRunSamples;
  * bitfield decoding, never VU register state or dynamic branches. */
 static PspVu1Instruction sPspVu1Decoded[PSP_VU1_INSTRUCTION_COUNT];
 static unsigned sPspVuDecodedWords, sPspVuDecodedExecuted, sPspVuSkippedMpgWords;
+static unsigned sPspStage399EmptyBatches;
+unsigned GsVu1_PspStage399EmptyPerf(void) {
+    unsigned count=sPspStage399EmptyBatches;
+    sPspStage399EmptyBatches=0u;
+    return count;
+}
 void GsVu1_PspPredecodePerf(unsigned out[3]) {
     out[0]=sPspVuDecodedWords;
     out[1]=sPspVuDecodedExecuted;
@@ -942,6 +949,23 @@ __attribute__((hot)) static int hle_program4(void) {
 
     memcpy(tag, vview(top + 2, 1, NULL), 16);
     count = (uint32_t)(tag[0] & 0x7FFF);
+#ifdef PORT_PSP
+    /* A valid PS2 triangle-strip of 0..2 vertices has no triangles,
+     * but GIF/TEX0/PRIM may still update state. Native state replay
+     * avoids executing the whole 399-instruction VU1 program solely
+     * for this draw-less batch. Other primitive kinds and ambiguous
+     * packet bounds retain the original interpreter. */
+    {
+        extern int gPspNativeStage4;
+        if (gPspNativeStage4 && PspStage399_EmptyStrip(top,tag[0])) {
+            gif_ad(vview(top,2,NULL));
+            Gs_RegWrite(0,(tag[0] >> 47) & 0x7FF);
+            ++sStatKicks;
+            ++sPspStage399EmptyBatches;
+            return 1;
+        }
+    }
+#endif
     if (count < 3 || top + 3 + count * 3 > 1024) {
         return 0;
     }
