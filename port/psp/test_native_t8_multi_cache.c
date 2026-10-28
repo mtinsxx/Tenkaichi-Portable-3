@@ -4,11 +4,12 @@
 #include <string.h>
 #include "psp_native_t8_index_cache.h"
 int main(void) {
-    PspNativeT8Slot c[PSP_NATIVE_T8_CACHE_SLOTS]={{0}};
+    PspNativeT8Slot c[PSP_NATIVE_T8_CACHE_SLOTS];
     uint8_t img[PSP_NATIVE_T8_CACHE_SLOTS][PSP_NATIVE_T8_SLOT_BYTES]={{0}};
     unsigned i;
     const uint32_t p[4]={336u,368u,112u,0u};
     uint32_t now=0;
+    memset(c,0,sizeof(c));
     assert(PSP_NATIVE_T8_CACHE_SLOTS*PSP_NATIVE_T8_SLOT_BYTES==256u*1024u);
     assert(PspNativeT8Cache_Fits(256,256));
     assert(PspNativeT8Cache_Fits(128,128));
