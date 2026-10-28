@@ -53,6 +53,7 @@
 #include "psp_gs_frame_mask.h"
 #include "psp_gs_afail.h"
 #include "psp_gs_fb_reconstruct.h"
+#include "psp_fb_snapshot_recycle.h"
 #include "psp_stage_compose.h"
 #include "psp_tex_reuse.h"
 #include "psp_tex_lru.h"
@@ -195,7 +196,7 @@ static int sTexCount;
 static PspTexReuse sTexReuse[PSP_TEX_REUSE_SLOTS];
 static uint32_t sTexSerial = 1u;
 static unsigned sTexReuseHits, sTexReuseFullKeys;
-static unsigned sTexReuseUnrelatedUploads;
+static unsigned sTexReuseUnrelatedUploads, sTexReuseEraseRepairs;
 static Target sTargets[MAX_TARGETS];
 static Vtx *sVb;             /* the vertex batch: ordinary memory, the engine reads it from there */
 static int sVbCount, sVbMode; /* count, and what primitives the batch holds */
@@ -329,6 +330,7 @@ static unsigned sWorkPairSamples, sWorkPairOwnerMisses;
 static unsigned sFbSnapshotsSaved, sFbSnapshotsSampled;
 static unsigned sFbSnapshotsAllocFail, sFbSnapshotsDeferred;
 static unsigned sFbSnapshotAllocs, sFbSnapshotBudgetSkip;
+static unsigned sFbSnapshotRecycled;
 static unsigned sFbAliasHit, sFbAliasFallback, sFbAliasReupload;
 static unsigned sFbAliasUnrendered, sFbAliasSelf, sFbWorkOwnerChanges;
 static unsigned sFbPsmAliasRejected, sGsAfailSecondPass, sGsAfailHudFallback;
@@ -530,10 +532,13 @@ static int tex_evict_one(void) {
     }
     free(sTex[oldest].heap_alloc);
     sTexRamMem -= sTex[oldest].bytes;
+    /* Keep unrelated hot keys valid after descriptor array compaction;
+       invalidate ONLY the removed index and shift indices after it. */
+    sTexReuseEraseRepairs += Psp_TexReuseOnErase(sTexReuse,
+                          PSP_TEX_REUSE_SLOTS,(unsigned)oldest,sTexSerial);
     memmove(&sTex[oldest], &sTex[oldest + 1],
             (size_t)(sTexCount - oldest - 1) * sizeof(Tex));
     --sTexCount;
-    ++sTexSerial; /* descriptors shifted */
     ++sTexCacheEvicted;
     ++sTexPressureEvictions;
     sceGuTexFlush();
@@ -555,10 +560,11 @@ static void tex_evict(unsigned additionalRamBytes) {
                 oldest = i;
         }
         if (oldest < 0) break;
+        sTexReuseEraseRepairs += Psp_TexReuseOnErase(sTexReuse,
+                          PSP_TEX_REUSE_SLOTS,(unsigned)oldest,sTexSerial);
         memmove(&sTex[oldest], &sTex[oldest + 1],
                 (size_t)(sTexCount - oldest - 1) * sizeof(Tex));
         --sTexCount;
-        ++sTexSerial;
         ++sTexCacheEvicted;
     }
 }
@@ -667,15 +673,48 @@ static int snapshot_target(int slot) {
     }
     if(!t->snapshot) {
         if(sFbSnapshotAllocs>=MAX_FB_SNAPSHOTS) {
-            ++sFbSnapshotBudgetSkip;
-            return 0;
+            /* The 1.5 MiB snapshot pool is fixed. Retire ONLY old,
+               invalid, GPU-synchronized images rather than failing
+               when another logical FBP needs to save its pixels.
+               Do not evict any image sampled or written this frame. */
+            int donor=-1,k;
+            for(k=0;k<MAX_TARGETS;k++) {
+                Target *old=&sTargets[k];
+                if(k==slot || !old->snapshot) continue;
+                if(PspGsFb_CanRecycleSnapshot(1,old->used,
+                      &old->snapVersion,old->gen,
+                      gGsPageGen[old->fbp & 511u],
+                      old->snapshotSampledFrame,sFrame)) {
+                    donor=k;
+                    break;
+                }
+            }
+            if(donor>=0) {
+                Target *old=&sTargets[donor];
+                t->snapshotRaw=old->snapshotRaw;
+                t->snapshot=old->snapshot;
+                old->snapshotRaw=NULL;
+                old->snapshot=NULL;
+                /* Preserve the old logical write counter; only its
+                   obsolete RAM image is invalidated. */
+                old->snapVersion.valid=0u;
+                old->snapVersion.saved=0u;
+                old->snapVersion.sourceGen=0u;
+                old->snapVersion.frame=0u;
+                ++sFbSnapshotRecycled;
+            } else {
+                ++sFbSnapshotBudgetSkip;
+                return 0;
+            }
+        } else {
+            t->snapshotRaw=malloc(PSP_GS_FB_SNAPSHOT_BYTES+63u);
+            if(!t->snapshotRaw) {++sFbSnapshotsAllocFail;return 0;}
+            aligned=((uintptr_t)t->snapshotRaw+63u)&~(uintptr_t)63u;
+            t->snapshot=(void *)aligned;
+            ++sFbSnapshotAllocs;
         }
-        t->snapshotRaw=malloc(PSP_GS_FB_SNAPSHOT_BYTES+63u);
-        if(!t->snapshotRaw) {++sFbSnapshotsAllocFail;return 0;}
-        aligned=((uintptr_t)t->snapshotRaw+63u)&~(uintptr_t)63u;
-        t->snapshot=(void *)aligned;
-        ++sFbSnapshotAllocs;
-        /* Black padding keeps T8/GU padding outside 480x272 defined. */
+        /* Zero GE texture's unused padding after EACH pool rebind.
+           Cached PSP main memory must be flushed before GPU writes. */
         memset(t->snapshot,0,PSP_GS_FB_SNAPSHOT_BYTES);
         sceKernelDcacheWritebackInvalidateRange(t->snapshot,
                                                   PSP_GS_FB_SNAPSHOT_BYTES);
@@ -3119,10 +3158,11 @@ void Psp_GuStats(unsigned out[4]) {
             sTexCount, MAX_TEX, sTexMem / 1024u, sTexRamMem / 1024u,
             sTexRamPeak / 1024u, sTexCacheHits, sTexCacheMisses,
             sTexCacheEvicted, sTexHeapFailed, sTexOversized);
-    Psp_Log("psp: texture guarded reuse: hits=%u full-key=%u unrelated-upload-skips=%u epoch=%u serial=%u\n",
+    Psp_Log("psp: texture guarded reuse: hits=%u full-key=%u unrelated-upload-skips=%u epoch=%u serial=%u erase-index-repairs=%u\n",
             sTexReuseHits, sTexReuseFullKeys, sTexReuseUnrelatedUploads,
-            gGsPspTextureEpoch, sTexSerial);
+            gGsPspTextureEpoch, sTexSerial, sTexReuseEraseRepairs);
     sTexReuseHits = sTexReuseFullKeys = sTexReuseUnrelatedUploads = 0;
+    sTexReuseEraseRepairs = 0;
     Psp_Log("psp: texture LOD: tex_limit=%d reduced-new=%u cache-hits=%u cache-pixels-saved=%uK\n",
             gPspTexLimit, sLodReduced, sLodCacheHits,
             (unsigned)(sLodPixelsSaved / 1024ull));
