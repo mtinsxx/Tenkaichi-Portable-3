@@ -876,7 +876,7 @@ static int psp_native_t8_try_read(uint32_t tbp,uint32_t tbw,uint32_t gen,
     if(enabled<0) {
         fp=fopen("ms0:/PSP/GAME/BT3/native/enable.txt","rb");
         enabled=fp!=NULL;
-        if(fp) {fclose(fp);Psp_Log("psp: optional native PSMT8 pack reader enabled\\n");}
+        if(fp) {fclose(fp);Psp_Log("psp: optional native PSMT8 pack reader enabled\n");}
     }
     if(!enabled || !dst || !w || !h || w>512u || h>512u) return 0;
     snprintf(path,sizeof(path),
@@ -885,7 +885,7 @@ static int psp_native_t8_try_read(uint32_t tbp,uint32_t tbw,uint32_t gen,
     fp=fopen(path,"rb");
     if(!fp) {
         if(sNativeT8PackMissing<4u)
-            Psp_Log("psp: native T8 pack candidate tbp=%u tbw=%u gen=%08x size=%ux%u (missing)\\n",
+            Psp_Log("psp: native T8 pack candidate tbp=%u tbw=%u gen=%08x size=%ux%u (missing)\n",
                     tbp,tbw,gen,w,h);
         ++sNativeT8PackMissing;
         return 0;
@@ -1566,7 +1566,7 @@ static void movie_draw_frame(void) {
                 sMovieConvertMaxUs / 1000u);
     }
     if (sMovieDisplayed == 1) {
-        Psp_Log("psp: movie: first frame sent to PSP GU (480x272)\\n");
+        Psp_Log("psp: movie: first frame sent to PSP GU (480x272)\n");
     }
 }
 
@@ -3223,7 +3223,7 @@ void Psp_GuStats(unsigned out[4]) {
     Psp_Log("psp: PSMT8 differential decode: checked=%u mismatched=%u rebuilt-from-scalar=%u screen-texture-lookup-preserved=%u\n",
             sT8RefVerified,sT8RefMismatch,sT8RefRebuilt,sFbReadLookupPreserved);
     sT8RefVerified=sT8RefMismatch=sT8RefRebuilt=sFbReadLookupPreserved=0;
-    Psp_Log("psp: offline native T8 packs: loaded=%u not-found=%u rejected=%u (opt-in, GS page+CLUT hash checked)\\n",
+    Psp_Log("psp: offline native T8 packs: loaded=%u not-found=%u rejected=%u (opt-in, GS page+CLUT hash checked)\n",
             sNativeT8PackLoaded,sNativeT8PackMissing,sNativeT8PackRejected);
     sNativeT8PackLoaded=sNativeT8PackMissing=sNativeT8PackRejected=0;
     Psp_Log("psp: texture cache: entries=%d/%d vram=%u KB ram=%u KB peak=%u KB hits=%u misses=%u evicted=%u alloc-failed=%u oversized=%u\n",
