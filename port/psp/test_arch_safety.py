@@ -50,10 +50,15 @@ def main():
             "GS native/fb readback no-ops are reported, not claimed complete")
     allocation = gu.split("t = &sTex[sTexCount++];", 1)[1].split(
         "t->tex0 = t0;", 1)[0]
+    eviction = gu.split("static int tex_evict_one", 1)[1].split(
+        "/* Recover from malloc failures", 1)[0]
     require("++sTexSerial" not in allocation and
             "Psp_TexReuseRemember" in allocation and
-            "++sTexSerial" in gu.split("static int tex_evict_one", 1)[1],
-            "cache append preserves indices; eviction invalidates hot descriptors")
+            "Psp_TexReuseOnErase" in eviction and
+            eviction.count("Psp_TexReuseOnErase") == 2 and
+            "++sTexSerial" not in eviction and
+            "PspTexLru_IsOlder" in eviction,
+            "cache append preserves TEX0 keys; both eviction paths rebase only affected indices")
     require("PspStage4_TransformClipReady(o, p, p + 4, p + 8" in gu and
             "clip->clip" in gu,
             "native stage reuses already validated clip coordinates")
