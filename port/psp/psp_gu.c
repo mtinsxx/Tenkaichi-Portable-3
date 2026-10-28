@@ -193,12 +193,14 @@ static void *sTexClut;      /* T8 CLUT attached to the last cache hit/miss */
 static uint32_t sTexClutTicket, sClutTicketNext;
 static unsigned sT8NativeNew, sT8NativeHits, sT8NativeSaved;
 static unsigned sT8RefVerified, sT8RefMismatch, sT8RefRebuilt;
-/* A single 256 KiB PSP-native linear index image. Only source GS pages
- * key this cache; the live game CLUT is always decoded separately.
- * This avoids adding another heap allocation in a memory-bound port. */
-static PspNativeT8Source sT8IndexSource;
-static uint8_t sT8IndexBuffer[512u*512u];
+/* Fixed-size 4x64 KiB source-index cache: retains four independent
+ * PSMT8 images without increasing the old 256 KiB RAM footprint.
+ * The live CLUT is always decoded separately from cached indices. */
+static PspNativeT8Slot sT8IndexSlots[PSP_NATIVE_T8_CACHE_SLOTS];
+static uint8_t sT8IndexBuffer[PSP_NATIVE_T8_CACHE_SLOTS][PSP_NATIVE_T8_SLOT_BYTES];
+static uint32_t sT8IndexClock;
 static unsigned sT8IndexHits, sT8IndexMisses, sT8IndexStored;
+static unsigned sT8IndexEvicted, sT8IndexOversize;
 static unsigned sNativeT8PackLoaded, sNativeT8PackMissing, sNativeT8PackRejected;
 static unsigned sFbReadLookupPreserved;
 static Tex sTex[MAX_TEX];
@@ -1063,12 +1065,16 @@ static void *texture_get(int ctx, unsigned lodCap, int white_sprite,
             idx=tex_malloc_pressure((size_t)readW*readH);
         }
         if (!idx) return NULL;
-        /* Source page hash is captured BEFORE CLUT hashing. The last
-         * complete PSMT8 source image can be reused even when the GS
-         * streamed a different palette to the SAME TEX0 source. */
-        if (PspNativeT8Source_Matches(&sT8IndexSource,tbp,tbw,
-                       indexGen,readW,readH)) {
-            memcpy(idx,sT8IndexBuffer,(size_t)readW*readH);
+        /* Keep four independent texture-index sources resident.
+         * The input source-hash is taken before the palette hash:
+         * a CLUT-only update leaves the indices reusable. The
+         * format is only PSMT8, never PSMT8H or indexed depth. */
+        {
+        int cachedSlot=PspNativeT8Cache_Lookup(sT8IndexSlots,
+                     PSP_NATIVE_T8_CACHE_SLOTS,tbp,tbw,indexGen,
+                     readW,readH,++sT8IndexClock);
+        if(cachedSlot>=0) {
+            memcpy(idx,sT8IndexBuffer[cachedSlot],(size_t)readW*readH);
             ++sT8IndexHits;
         } else {
             ++sT8IndexMisses;
@@ -1096,10 +1102,25 @@ static void *texture_get(int ctx, unsigned lodCap, int white_sprite,
                     ++sT8RefRebuilt;
                 }
             }
-            memcpy(sT8IndexBuffer,idx,(size_t)readW*readH);
-            PspNativeT8Source_Remember(&sT8IndexSource,tbp,tbw,
-                              indexGen,readW,readH);
-            ++sT8IndexStored;
+            {
+                int slot=PspNativeT8Cache_Choose(sT8IndexSlots,
+                         PSP_NATIVE_T8_CACHE_SLOTS,readW,readH,
+                         sT8IndexClock);
+                if(slot>=0) {
+                    if(sT8IndexSlots[slot].source.valid)
+                        ++sT8IndexEvicted;
+                    memcpy(sT8IndexBuffer[slot],idx,(size_t)readW*readH);
+                    PspNativeT8Cache_Commit(&sT8IndexSlots[slot],
+                                   tbp,tbw,indexGen,readW,readH,
+                                   sT8IndexClock);
+                    ++sT8IndexStored;
+                } else {
+                    /* Large source textures are decoded via the
+                     * original GS reader, never truncated to 64 KiB. */
+                    ++sT8IndexOversize;
+                }
+            }
+        }
         }
         if (readW != tw || readH != th)
             Psp_LodSubsample8(idx,readW,readH,tw,th);
@@ -3246,9 +3267,12 @@ void Psp_GuStats(unsigned out[4]) {
     Psp_Log("psp: PSMT8 differential decode: checked=%u mismatched=%u rebuilt-from-scalar=%u screen-texture-lookup-preserved=%u\n",
             sT8RefVerified,sT8RefMismatch,sT8RefRebuilt,sFbReadLookupPreserved);
     sT8RefVerified=sT8RefMismatch=sT8RefRebuilt=sFbReadLookupPreserved=0;
-    Psp_Log("psp: native T8 source index reuse: hits=%u misses=%u stored=%u (CLUT always live; GS source pages checked)\n",
-            sT8IndexHits,sT8IndexMisses,sT8IndexStored);
+    Psp_Log("psp: native T8 source index reuse: hits=%u misses=%u stored=%u lru-evicted=%u oversized=%u slots=%u (CLUT always live; GS source pages checked)\n",
+            sT8IndexHits,sT8IndexMisses,sT8IndexStored,
+            sT8IndexEvicted,sT8IndexOversize,
+            (unsigned)PSP_NATIVE_T8_CACHE_SLOTS);
     sT8IndexHits=sT8IndexMisses=sT8IndexStored=0;
+    sT8IndexEvicted=sT8IndexOversize=0;
     Psp_Log("psp: offline native T8 packs: loaded=%u not-found=%u rejected=%u (opt-in, GS page+CLUT hash checked)\n",
             sNativeT8PackLoaded,sNativeT8PackMissing,sNativeT8PackRejected);
     sNativeT8PackLoaded=sNativeT8PackMissing=sNativeT8PackRejected=0;
