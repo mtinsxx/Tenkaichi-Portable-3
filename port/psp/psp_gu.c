@@ -883,7 +883,13 @@ static int psp_native_t8_try_read(uint32_t tbp,uint32_t tbw,uint32_t gen,
              "ms0:/PSP/GAME/BT3/native/t8_%04x_%08x_%ux%u.tp8",
              tbp,gen,w,h);
     fp=fopen(path,"rb");
-    if(!fp) {++sNativeT8PackMissing;return 0;}
+    if(!fp) {
+        if(sNativeT8PackMissing<4u)
+            Psp_Log("psp: native T8 pack candidate tbp=%u tbw=%u gen=%08x size=%ux%u (missing)\\n",
+                    tbp,tbw,gen,w,h);
+        ++sNativeT8PackMissing;
+        return 0;
+    }
     bytes=(size_t)w*h;
     if(fread(&header,1,sizeof(header),fp)!=sizeof(header) ||
        !PspNativeT8_Match(&header,tbp,tbw,gen,w,h) ||
