@@ -57,6 +57,8 @@
 #include "psp_tex_reuse.h"
 #include "psp_tex_lru.h"
 #include "psp_t8_native.h"
+#include "psp_texture_read_verify.h"
+#include "psp_fb_lookup_policy.h"
 #include "psp_gpu_probe.h"
 #include "psp_vram_address.h"
 #include "psp_tex_lifetime.h"
@@ -186,6 +188,8 @@ static int sTexSwizzled;     /* layout of the last cache-hit/new texture */
 static void *sTexClut;      /* T8 CLUT attached to the last cache hit/miss */
 static uint32_t sTexClutTicket, sClutTicketNext;
 static unsigned sT8NativeNew, sT8NativeHits, sT8NativeSaved;
+static unsigned sT8RefVerified, sT8RefMismatch, sT8RefRebuilt;
+static unsigned sFbReadLookupPreserved;
 static Tex sTex[MAX_TEX];
 static int sTexCount;
 static PspTexReuse sTexReuse[PSP_TEX_REUSE_SLOTS];
@@ -683,11 +687,30 @@ static int snapshot_target(int slot) {
     ++sFbSnapshotsSaved;
     return 1;
 }
+/* Reference GS memory reader: verify the optimized PSMT8 swizzle against
+ * exactly the same logical GS source before uploading the texture to GE. */
+typedef struct { uint32_t tbp, tbw, psm; } PspT8Ref;
+static uint32_t psp_t8_ref_sample(void *opaque, unsigned x, unsigned y) {
+    const PspT8Ref *r=(const PspT8Ref *)opaque;
+    return Gs_VramRead(r->tbp,r->tbw,r->psm,x,y);
+}
 static int target_get(uint32_t fbp, int create) {
     int i, slot = -1;
 
     for (i = 0; i < MAX_TARGETS; i++) {
         if (sTargets[i].used && sTargets[i].fbp == fbp) {
+            /* A GS TEX0 source lookup must NOT move the physical backing.
+             * The old lookup called target_color after a screen swap,
+             * changing the backing of a source image without drawing it.
+             * Preserve both pixel ownership and its valid snapshot. The
+             * crash-associated PR #3 restore and screen owner changes
+             * are intentionally NOT included here. */
+            if (!PspFbLookup_CanChangeBacking(create)) {
+                if (sTargets[i].color != target_color(fbp))
+                    ++sFbReadLookupPreserved;
+                sTargets[i].last=sFrame;
+                return i;
+            }
             void *nextBacking = target_color(fbp);
             if (sTargets[i].rendered &&
                 PspGsFb_BackingChanged((uintptr_t)sTargets[i].color,
@@ -941,6 +964,27 @@ static void *texture_get(int ctx, unsigned lodCap, int white_sprite,
         if (!Gs_VramReadIdx8(tbp,tbw,psm,readW,readH,idx,readW)) {
             tex_temp_free(idx);
             return NULL;
+        }
+        /* The accelerated GS PSMT8 decoder is checked against the scalar
+         * reference at 8x8/16x16 tile boundaries. A mismatch is a real
+         * decode failure; reconstruct from the reference instead of
+         * uploading a corrupted GE texture. Sampling is bounded to
+         * 64 pixels per NEW texture, not per draw or cache hit. */
+        {
+            PspT8Ref ref={tbp,tbw,psm};
+            unsigned badX=0u,badY=0u;
+            ++sT8RefVerified;
+            if(!PspT8_CompareSamples(idx,readW,readH,readW,
+                    psp_t8_ref_sample,&ref,&badX,&badY)) {
+                unsigned x,y;
+                ++sT8RefMismatch;
+                if(sT8RefMismatch<=4u)
+                    Psp_Log("psp: PSMT8 reference mismatch tbp=%u tbw=%u cbp=%u size=%ux%u pixel=%u,%u; rebuilding\n",
+                        tbp,tbw,cbp,readW,readH,badX,badY);
+                for(y=0;y<readH;y++) for(x=0;x<readW;x++)
+                    idx[y*readW+x]=(uint8_t)Gs_VramRead(tbp,tbw,psm,x,y);
+                ++sT8RefRebuilt;
+            }
         }
         if (readW != tw || readH != th)
             Psp_LodSubsample8(idx,readW,readH,tw,th);
@@ -3059,6 +3103,9 @@ void Psp_GuStats(unsigned out[4]) {
     Psp_Log("psp: indexed PSMT8 native GU T8: new=%u cache-hits=%u decoded-storage-saved=%uKB (white-sprite unchanged)\n",
             sT8NativeNew,sT8NativeHits,sT8NativeSaved/1024u);
     sT8NativeNew=sT8NativeHits=sT8NativeSaved=0;
+    Psp_Log("psp: PSMT8 differential decode: checked=%u mismatched=%u rebuilt-from-scalar=%u screen-texture-lookup-preserved=%u\n",
+            sT8RefVerified,sT8RefMismatch,sT8RefRebuilt,sFbReadLookupPreserved);
+    sT8RefVerified=sT8RefMismatch=sT8RefRebuilt=sFbReadLookupPreserved=0;
     Psp_Log("psp: texture cache: entries=%d/%d vram=%u KB ram=%u KB peak=%u KB hits=%u misses=%u evicted=%u alloc-failed=%u oversized=%u\n",
             sTexCount, MAX_TEX, sTexMem / 1024u, sTexRamMem / 1024u,
             sTexRamPeak / 1024u, sTexCacheHits, sTexCacheMisses,
