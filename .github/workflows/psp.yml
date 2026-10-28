@@ -151,6 +151,11 @@ jobs:
           gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_t8_palette_refresh.c -o /tmp/tp3-clut-refresh
           /tmp/tp3-clut-refresh
 
+      - name: Test VU1 stage399 geometry-free native packet guard
+        run: |
+          gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/psp port/psp/test_stage399_empty.c -o /tmp/tp3-stage399-empty
+          /tmp/tp3-stage399-empty
+
       - name: Test PSP GU returned drawbuffer pointer normalization
         run: |
           gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_gu_swap_check.c -o /tmp/bt3-psp-gu-swap
