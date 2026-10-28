@@ -3350,6 +3350,12 @@ void Psp_GuStats(unsigned out[4]) {
             (unsigned)(sLodPixelsSaved / 1024ull));
     sLodReduced = sLodCacheHits = 0;
     sLodPixelsSaved = 0;
+    {
+        extern unsigned GsVu1_PspStage399EmptyPerf(void);
+        unsigned emptyBatches=GsVu1_PspStage399EmptyPerf();
+        Psp_Log("psp: native stage399 degenerate strips: bypassed=%u (GS TEX0/PRIM replayed, no triangles)\n",
+                emptyBatches);
+    }
     /* PSP-specific summary from the ported Vita VIF unpack fast path.
        If few vectors use it, the next optimization should target the
        VU1 instruction interpreter rather than the VIF unpack loop. */
