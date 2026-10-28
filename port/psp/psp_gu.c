@@ -53,6 +53,7 @@
 #include "psp_gs_frame_mask.h"
 #include "psp_gs_afail.h"
 #include "psp_gs_fb_reconstruct.h"
+#include "psp_gs_screen_coherence.h"
 #include "psp_stage_compose.h"
 #include "psp_tex_reuse.h"
 #include "psp_tex_lru.h"
@@ -314,13 +315,14 @@ static unsigned sFrameScreenDraws, sFrameWorkDraws, sFrameWorkOwners;
 static unsigned sFrameDiagShown, sFrameLastDiag;
 static unsigned sPixelProbeShown, sPixelProbeLastFrame;
 static unsigned sPixelProbeFrame, sPixelProbeSampleCount;
-static PspGpuPixelProbe sPixelProbeScreen, sPixelProbeWork0, sPixelProbeWork1;
+static PspGpuPixelProbe sPixelProbeScreen, sPixelProbeOther, sPixelProbeWork0, sPixelProbeWork1;
 static unsigned sPixelProbeScene, sPixelProbeFighter;
 static unsigned sTargetsRegistered;
 /* Each physical PSP WORK surface has its own logical GS owner.
    GS 336 lives in WORK0, GS 368 in WORK1; other scratch targets
    conservatively share WORK0, with strict owner invalidation. */
 static uint32_t sWorkOwnerFbp[PSP_WORK_SURFACES] = {UINT32_MAX,UINT32_MAX};
+static uint32_t sScreenOwnerFbp[2] = {UINT32_MAX, UINT32_MAX};
 static unsigned sWorkPairSamples, sWorkPairOwnerMisses;
 static unsigned sFbSnapshotsSaved, sFbSnapshotsSampled;
 static unsigned sFbSnapshotsAllocFail, sFbSnapshotsDeferred;
@@ -331,6 +333,8 @@ static unsigned sFbPsmAliasRejected, sGsAfailSecondPass, sGsAfailHudFallback;
 static unsigned sGsUploadSnapshot, sGsUploadUnsupported;
 static unsigned sStageCompositions, sStageComposeRejected, sStageTagged;
 static unsigned sTargetRebindInvalid, sTargetScreenCleared;
+static unsigned sScreenOwnerChanges, sScreenOwnerSnapshotFails;
+static unsigned sScreenRestoreCount, sScreenRestoreMissing, sSourceLookupPreserved;
 extern int gPspTargetFreshness;
 extern int gGsMainFbp; /* gs_sony.c: the frame buffer the frame is drawn into */
 extern int gGsDisplayOtherFbp; /* libgraph's paired SCREEN buffer */
@@ -688,6 +692,17 @@ static int target_get(uint32_t fbp, int create) {
 
     for (i = 0; i < MAX_TARGETS; i++) {
         if (sTargets[i].used && sTargets[i].fbp == fbp) {
+            /* TEX0 lookups are read-only: do not change the physical
+             * source buffer merely because sceGuSwapBuffers has switched
+             * the location that *future writes* would target. Previous
+             * code invalidated/rebound the source on a read, losing a
+             * valid previous-frame screen in the process. */
+            if (!PspGsScreen_WritesTarget(create)) {
+                if (sTargets[i].color != target_color(fbp))
+                    ++sSourceLookupPreserved;
+                sTargets[i].last = sFrame;
+                return i;
+            }
             void *nextBacking = target_color(fbp);
             if (sTargets[i].rendered &&
                 PspGsFb_BackingChanged((uintptr_t)sTargets[i].color,
@@ -697,8 +712,17 @@ static int target_get(uint32_t fbp, int create) {
                    The previous code left rendered=1 by default because
                    target_freshness was disabled, silently treating a
                    newly selected drawbuffer as already initialized. */
-                if(!PspGsFb_SampleValid(&sTargets[i].snapVersion,
-                                          sTargets[i].gen))
+                /* Preserve only the image still owned by this FBP.
+                 * The same physical screen may have been overwritten
+                 * by a different logical FBP in an intervening frame. */
+                int oldScreen=PspGsScreen_Slot((uintptr_t)sTargets[i].color,
+                         (uintptr_t)(sVram+FB0_OFF),
+                         (uintptr_t)(sVram+FB1_OFF));
+                int oldOwned=oldScreen<0 ||
+                      sScreenOwnerFbp[oldScreen]==fbp;
+                if (oldOwned &&
+                    !PspGsFb_SampleValid(&sTargets[i].snapVersion,
+                                        sTargets[i].gen))
                     snapshot_target(i);
                 sTargets[i].rendered=0;
                 ++sTargetRebindInvalid;
@@ -1816,6 +1840,34 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
             ++sDiagAlphaOtherMode[failMode];
         }
     }
+    /* SCREEN FB0/FB1 require the same logical-owner protection as WORK.
+       The PS2 screen pair can change roles without changing PSP draw
+       offsets. Before another FBP reuses a screen surface, capture every
+       live old owner in GE order. TEX0 can then sample its old snapshot
+       even when the physical buffer has been reclaimed. */
+    {
+        int screenSlot=PspGsScreen_Slot(
+              (uintptr_t)sTargets[targetIndex].color,
+              (uintptr_t)(sVram+FB0_OFF),
+              (uintptr_t)(sVram+FB1_OFF));
+        if(screenSlot>=0 && PspGsScreen_ChangesOwner(
+              sScreenOwnerFbp[screenSlot],(uint32_t)fbp)) {
+            int k;
+            flush();
+            ++sScreenOwnerChanges;
+            for(k=0;k<MAX_TARGETS;k++) {
+                if(k==targetIndex || !sTargets[k].used ||
+                   sTargets[k].color!=sTargets[targetIndex].color ||
+                   !sTargets[k].rendered) continue;
+                if(!PspGsFb_SampleValid(&sTargets[k].snapVersion,
+                                        sTargets[k].gen) &&
+                   !snapshot_target(k))
+                    ++sScreenOwnerSnapshotFails;
+                sTargets[k].rendered=0;
+            }
+            sScreenOwnerFbp[screenSlot]=(uint32_t)fbp;
+        }
+    }
     /* Invalidate only when a DIFFERENT logical GS FBP replaces the
        owner of the SAME physical PSP work buffer. The 336/368 pair
        remains alive concurrently on separate VRAM surfaces. */
@@ -1838,6 +1890,33 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
                     sTargets[k].rendered = 0;
                 }
             sWorkOwnerFbp[workSlot] = (uint32_t)fbp;
+        }
+    }
+    /* Migrate valid prior GS colour pixels when a logical display FBP
+       has changed physical PSP screen backing across swaps. The old
+       implementation saved an RGB5551 snapshot but left the new backing
+       black, relying on a complete redraw that the GS does not promise.
+       Never restore an old generation or a WORK buffer; those are
+       managed separately. This copy is ordered before this draw. */
+    {
+        Target *t=&sTargets[targetIndex];
+        int screenSlot=PspGsScreen_Slot((uintptr_t)t->color,
+                         (uintptr_t)(sVram+FB0_OFF),
+                         (uintptr_t)(sVram+FB1_OFF));
+        uint32_t currentGen=gGsPageGen[(uint32_t)fbp&511u];
+        if(PspGsScreen_CanRestore(screenSlot>=0,t->rendered,
+              t->snapshot!=NULL && t->snapVersion.valid,
+              t->snapVersion.saved,t->snapVersion.written,
+              t->snapVersion.sourceGen,currentGen)) {
+            flush();
+            sceGuCopyImage(GU_PSM_5551,0,0,SCR_W,SCR_H,
+                    BUF_W,t->snapshot,0,0,BUF_W,t->color);
+            sceGuTexFlush();
+            t->rendered=1;
+            ++sScreenRestoreCount;
+        } else if(screenSlot>=0 && !t->rendered &&
+                  t->snapVersion.written!=0u) {
+            ++sScreenRestoreMissing;
         }
     }
     /* Record that the image matches the current GS upload generation,
@@ -2643,24 +2722,29 @@ void GsGpu_FrameEnd(void) {
        Keep diagnostic logs bounded on very long battles. Never touch
        depth bits or GU state (previous depth=0 test broke fighters). */
     if (gPspLogAll && (sFrameStageInputs || sFrameFighterInputs) &&
-        (sPixelProbeShown < 24u || sFrame - sPixelProbeLastFrame >= 30u)) {
+        (sPixelProbeShown < 6u || sFrame - sPixelProbeLastFrame >= 60u)) {
         const volatile uint16_t *screen=(const volatile uint16_t *)
             (sVram+sMainDrawOffset);
+        const volatile uint16_t *other=(const volatile uint16_t *)
+            (sVram+(sMainDrawOffset==FB0_OFF?FB1_OFF:FB0_OFF));
         const volatile uint16_t *w0=(const volatile uint16_t *)(sVram+WORK_OFF);
         const volatile uint16_t *w1=(const volatile uint16_t *)(sVram+WORK2_OFF);
         PspGpuPixelProbe a=PspGpuProbe5551(screen,BUF_W,SCR_W,SCR_H);
+        PspGpuPixelProbe d=PspGpuProbe5551(other,BUF_W,SCR_W,SCR_H);
         PspGpuPixelProbe b=PspGpuProbe5551(w0,BUF_W,SCR_W,SCR_H);
         PspGpuPixelProbe c=PspGpuProbe5551(w1,BUF_W,SCR_W,SCR_H);
         /* Keep the last real-pixel sample in a separate summary so it
            survives as part of the next periodic report, not only the
            renderer's per-frame logs. No additional GPU/VRAM readback. */
-        sPixelProbeScreen=a; sPixelProbeWork0=b; sPixelProbeWork1=c;
+        sPixelProbeScreen=a; sPixelProbeOther=d;
+        sPixelProbeWork0=b; sPixelProbeWork1=c;
         sPixelProbeFrame=sFrame;
         sPixelProbeScene=sFrameStageInputs;
         sPixelProbeFighter=sFrameFighterInputs;
         ++sPixelProbeSampleCount;
-        Psp_Log("psp: LOG_ALL PIXELS post-GE frame=%u main-fbp=%d screen=%u/%u hash=%08x work0-owner=%u work0=%u/%u hash=%08x work1-owner=%u work1=%u/%u hash=%08x stage-input=%u fighter-input=%u\n",
-                sFrame, gGsMainFbp, a.colored,a.pixels,a.hash,
+        Psp_Log("psp: LOG_ALL PIXELS post-GE frame=%u main-fbp=%d draw=0x%x screen=%u/%u hash=%08x other-screen=%u/%u hash=%08x work0-owner=%u work0=%u/%u hash=%08x work1-owner=%u work1=%u/%u hash=%08x stage-input=%u fighter-input=%u\n",
+                sFrame, gGsMainFbp,sMainDrawOffset,
+                a.colored,a.pixels,a.hash,d.colored,d.pixels,d.hash,
                 sWorkOwnerFbp[0],b.colored,b.pixels,b.hash,
                 sWorkOwnerFbp[1],c.colored,c.pixels,c.hash,
                 sFrameStageInputs,sFrameFighterInputs);
@@ -2777,6 +2861,7 @@ int Psp_GuInit(void) {
     memset(sVram + FB1_OFF, 0, FB_SIZE);
     memset(sVram + WORK_OFF, 0, WORK_SIZE);
     memset(sVram + WORK2_OFF, 0, WORK2_SIZE);
+    sScreenOwnerFbp[0]=sScreenOwnerFbp[1]=UINT32_MAX;
     Psp_Log("psp: startup VRAM clean: both screen buffers and work target cleared (one-time)\n");
     Psp_Log("psp: GS-native screen colour lifetime: frame-start GU color clear disabled; Sony GIF clear sprites kept; depth clear kept\n");
     Psp_Log("psp: GS depth Z24->Z16 direct conversion active [depth-z16-20261026]\n");
@@ -3132,14 +3217,21 @@ void Psp_GuStats(unsigned out[4]) {
     Psp_Log("psp: TARGET freshness=%d invalid-rebind=%u invalid-screen-clear=%u per interval\n",
             gPspTargetFreshness, sTargetRebindInvalid, sTargetScreenCleared);
     sTargetRebindInvalid = sTargetScreenCleared = 0;
+    Psp_Log("psp: GS screen coherence: source-lookup-preserved=%u screen-owner-changes=%u snapshot-failed=%u snapshot-restored=%u restore-unavailable=%u current-owners=%u/%u\n",
+            sSourceLookupPreserved,sScreenOwnerChanges,
+            sScreenOwnerSnapshotFails,sScreenRestoreCount,
+            sScreenRestoreMissing,sScreenOwnerFbp[0],sScreenOwnerFbp[1]);
+    sSourceLookupPreserved=sScreenOwnerChanges=0;
+    sScreenOwnerSnapshotFails=sScreenRestoreCount=sScreenRestoreMissing=0;
     Psp_Log("psp: GS physical WORK pair: 336-slot=0 368-slot=1 samples=%u owner-conflicts=%u owners=%u/%u texture-vram=%uKB\n",
             sWorkPairSamples, sWorkPairOwnerMisses,
             sWorkOwnerFbp[0], sWorkOwnerFbp[1], (unsigned)(TEX_SIZE/1024u));
     sWorkPairSamples=sWorkPairOwnerMisses=0;
     if (gPspLogAll) {
-        Psp_Log("psp: LOG_ALL GPU-PROBE last-post-GE frame=%u samples-in-interval=%u screen-rgb=%u/%u hash=%08x work0-rgb=%u/%u hash=%08x work1-rgb=%u/%u hash=%08x stage-input=%u fighter-input=%u\n",
+        Psp_Log("psp: LOG_ALL GPU-PROBE last-post-GE frame=%u samples-in-interval=%u screen-rgb=%u/%u hash=%08x other-screen-rgb=%u/%u hash=%08x work0-rgb=%u/%u hash=%08x work1-rgb=%u/%u hash=%08x stage-input=%u fighter-input=%u\n",
                 sPixelProbeFrame, sPixelProbeSampleCount,
                 sPixelProbeScreen.colored,sPixelProbeScreen.pixels,sPixelProbeScreen.hash,
+                sPixelProbeOther.colored,sPixelProbeOther.pixels,sPixelProbeOther.hash,
                 sPixelProbeWork0.colored,sPixelProbeWork0.pixels,sPixelProbeWork0.hash,
                 sPixelProbeWork1.colored,sPixelProbeWork1.pixels,sPixelProbeWork1.hash,
                 sPixelProbeScene,sPixelProbeFighter);
