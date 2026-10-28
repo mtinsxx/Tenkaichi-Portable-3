@@ -82,11 +82,12 @@ static unsigned sPspVuRunCalls, sPspVuRunSamples;
 /* Executable VU microcode is uploaded with VIF MPG. Cache only immutable
  * bitfield decoding, never VU register state or dynamic branches. */
 static PspVu1Instruction sPspVu1Decoded[PSP_VU1_INSTRUCTION_COUNT];
-static unsigned sPspVuDecodedWords, sPspVuDecodedExecuted;
-void GsVu1_PspPredecodePerf(unsigned out[2]) {
+static unsigned sPspVuDecodedWords, sPspVuDecodedExecuted, sPspVuSkippedMpgWords;
+void GsVu1_PspPredecodePerf(unsigned out[3]) {
     out[0]=sPspVuDecodedWords;
     out[1]=sPspVuDecodedExecuted;
-    sPspVuDecodedWords=sPspVuDecodedExecuted=0u;
+    out[2]=sPspVuSkippedMpgWords;
+    sPspVuDecodedWords=sPspVuDecodedExecuted=sPspVuSkippedMpgWords=0u;
 }
 static unsigned long long sPspVuRunSampleUs;
 static PspVuProfileBucket sPspVuBuckets[PSP_VU_BUCKET_COUNT];
@@ -154,13 +155,14 @@ void GsVu1_Program(uint32_t addr, const uint32_t *words, uint32_t count) {
     sProgSize = addr == 0 ? count / 2 : sProgSize + count / 2;
     for (i = 0; i < count; i++) {
         unsigned byteOffset = ((addr * 8) + i * 4) & 0x3FFCu;
-        memcpy(&vu.micro[byteOffset], &words[i], 4);
 #ifdef PORT_PSP
-        /* The next MSCAL runs compiled decode fields. A half-instruction
-         * MPG upload changes only the relevant 32-bit half, and the
-         * untouched half remains from the previous VU image. */
-        PspVu1_RefreshInstruction(sPspVu1Decoded,vu.micro,byteOffset/8u);
-        ++sPspVuDecodedWords;
+        if (PspVu1_ApplyMpgWord(vu.micro,sPspVu1Decoded,
+                               byteOffset,words[i]))
+            ++sPspVuDecodedWords;
+        else
+            ++sPspVuSkippedMpgWords;
+#else
+        memcpy(&vu.micro[byteOffset], &words[i], 4);
 #endif
     }
 }

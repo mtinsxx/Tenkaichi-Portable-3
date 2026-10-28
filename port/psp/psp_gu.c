@@ -58,6 +58,8 @@
 #include "psp_tex_reuse.h"
 #include "psp_tex_lru.h"
 #include "psp_t8_native.h"
+#include "psp_native_t8_pack.h"
+#include "psp_native_gu_passes.h"
 #include "psp_texture_read_verify.h"
 #include "psp_fb_lookup_policy.h"
 #include "psp_gpu_probe.h"
@@ -190,6 +192,7 @@ static void *sTexClut;      /* T8 CLUT attached to the last cache hit/miss */
 static uint32_t sTexClutTicket, sClutTicketNext;
 static unsigned sT8NativeNew, sT8NativeHits, sT8NativeSaved;
 static unsigned sT8RefVerified, sT8RefMismatch, sT8RefRebuilt;
+static unsigned sNativeT8PackLoaded, sNativeT8PackMissing, sNativeT8PackRejected;
 static unsigned sFbReadLookupPreserved;
 static Tex sTex[MAX_TEX];
 static int sTexCount;
@@ -229,6 +232,8 @@ static unsigned sNativeStageFastStarts, sNativeStageFastTriangles;
 /* Same no-state-change optimization for the two fighter VU1 layers:
    each layer has one TEX0/PRIM; reuse the first triangle's proven state. */
 static unsigned sNativeFighterFastStarts, sNativeFighterFastTriangles;
+static unsigned sGuNativePass=PSP_GU_PASS_NONE;
+static unsigned sGuNativePassBarriers,sGuNativePassStage,sGuNativePassFighter,sGuNativePassSprites;
 /* Number of full strips provably clipped before the VU1 interpreter.
    No visible triangles can be removed by the conservative proof. */
 static unsigned sNativeStageCulledStrips, sNativeStageCulledVerts;
@@ -854,6 +859,51 @@ static uint32_t clut_hash(uint32_t cbp, uint32_t cpsm, uint32_t count) {
     return h;
 }
 
+/* Opt-in offline texture conversion: users extract their own assets
+ * locally and put a version-checked pack under PSP/GAME/BT3/native.
+ * We never try to open any per-texture file unless the enable marker
+ * exists, so ordinary users never suffer storage I/O on cache misses.
+ * The 64-sample scalar differential below still checks every loaded
+ * pack against the CURRENT GS texture, preventing stale/palette
+ * incompatibility from reaching the GPU. */
+static int psp_native_t8_try_read(uint32_t tbp,uint32_t tbw,uint32_t gen,
+              unsigned w,unsigned h,uint8_t *dst) {
+    static int enabled=-1;
+    char path[192];
+    FILE *fp;
+    PspNativeT8Header header;
+    size_t bytes;
+    if(enabled<0) {
+        fp=fopen("ms0:/PSP/GAME/BT3/native/enable.txt","rb");
+        enabled=fp!=NULL;
+        if(fp) {fclose(fp);Psp_Log("psp: optional native PSMT8 pack reader enabled\n");}
+    }
+    if(!enabled || !dst || !w || !h || w>512u || h>512u) return 0;
+    snprintf(path,sizeof(path),
+             "ms0:/PSP/GAME/BT3/native/t8_%04x_%08x_%ux%u.tp8",
+             tbp,gen,w,h);
+    fp=fopen(path,"rb");
+    if(!fp) {
+        if(sNativeT8PackMissing<4u)
+            Psp_Log("psp: native T8 pack candidate tbp=%u tbw=%u gen=%08x size=%ux%u (missing)\n",
+                    tbp,tbw,gen,w,h);
+        ++sNativeT8PackMissing;
+        return 0;
+    }
+    bytes=(size_t)w*h;
+    if(fread(&header,1,sizeof(header),fp)!=sizeof(header) ||
+       !PspNativeT8_Match(&header,tbp,tbw,gen,w,h) ||
+       fread(dst,1,bytes,fp)!=bytes ||
+       PspNativeT8_Fnv(dst,bytes)!=header.dataFnv ||
+       fgetc(fp)!=EOF) {
+        ++sNativeT8PackRejected;
+        fclose(fp);
+        return 0;
+    }
+    fclose(fp);
+    ++sNativeT8PackLoaded;
+    return 1;
+}
 /* GS memory -> a PSP texture for the current TEX0. NULL when there is no room. */
 /* The stored bits of a rectangle of GS memory, as gs_core.c has them. The Vita has block-at-a-time versions of
    these two in a Vita-only part of that file (one address computation per block instead of per pixel); the PSP
@@ -1002,7 +1052,8 @@ static void *texture_get(int ctx, unsigned lodCap, int white_sprite,
             idx=tex_malloc_pressure((size_t)readW*readH);
         }
         if (!idx) return NULL;
-        if (!Gs_VramReadIdx8(tbp,tbw,psm,readW,readH,idx,readW)) {
+        if (!psp_native_t8_try_read(tbp,tbw,gen,readW,readH,idx) &&
+            !Gs_VramReadIdx8(tbp,tbw,psm,readW,readH,idx,readW)) {
             tex_temp_free(idx);
             return NULL;
         }
@@ -1515,7 +1566,7 @@ static void movie_draw_frame(void) {
                 sMovieConvertMaxUs / 1000u);
     }
     if (sMovieDisplayed == 1) {
-        Psp_Log("psp: movie: first frame sent to PSP GU (480x272)\\n");
+        Psp_Log("psp: movie: first frame sent to PSP GU (480x272)\n");
     }
 }
 
@@ -1559,6 +1610,20 @@ static void flush(void) {
     sBatches++;
 }
 
+/* All GPU primitives still preserve original GS submission order.
+ * Separate GE batches only where native stage, actor or sprite
+ * ownership changes. No arbitrary sorting across GS depth, alpha,
+ * framebuffer snapshots or shader effects. */
+static void psp_gu_mark_pass(unsigned pass) {
+    if(PspGuPass_MustFlush(sGuNativePass,pass,(unsigned)sVbCount)) {
+        flush();
+        ++sGuNativePassBarriers;
+    }
+    sGuNativePass=PspGuPass_Next(pass);
+    if(pass==PSP_GU_PASS_STAGE) ++sGuNativePassStage;
+    else if(pass==PSP_GU_PASS_FIGHTER) ++sGuNativePassFighter;
+    else if(pass==PSP_GU_PASS_SPRITE) ++sGuNativePassSprites;
+}
 void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
     uint64_t prim = gGs.prim, t0 = gGs.tex0[ctx], test = gGs.test[ctx], sc = gGs.scissor[ctx];
     uint64_t cl = gGs.clamp[ctx], frame = gGs.frame[ctx];
@@ -1594,6 +1659,7 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
         return;
     }
     sDraws++;
+    if(type==6) psp_gu_mark_pass(PSP_GU_PASS_SPRITE);
     /* Reject GS pixels with no possible scissor coverage before doing
        expensive texture decode, framebuffer aliasing or GE state setup.
        This affects stage, fighter, menu and HUD alike. Do not reject
@@ -2483,6 +2549,7 @@ int Psp_Stage4Prepare(int ctx, const float *vertices, uint32_t count,
    winding, flat-shading and the existing affine ST/Q behavior. */
 static void Psp_NativeEmitTriangle(PspStageFastBatch *b, int ctx,
                                    const GsVertex tri[3], int fighter) {
+    psp_gu_mark_pass(fighter ? PSP_GU_PASS_FIGHTER : PSP_GU_PASS_STAGE);
     if (!fighter) Psp_DiagAllIncident(PSP_DIAG_STAGE_TRIANGLE,ctx,0);
     if (PspGsStripSkip_Next(&b->stableSkip)) {
         /* Same immutable GS registers throughout the native VU batch.
@@ -3122,6 +3189,9 @@ void Psp_GuStats(unsigned out[4]) {
     Psp_Log("psp: GU swap verification: mismatch=%u unrecognized-return=%u swap_from_sdk=%d\n",
             sGuSwapMismatch, sGuSwapUnknown, gPspSwapFromSdk);
     sGuSwapMismatch = sGuSwapUnknown = 0;
+    Psp_Log("psp: native PSP GU ordered passes: stage-triangles=%u fighter-triangles=%u sprites=%u transition-barriers=%u (original GS order retained)\n",
+            sGuNativePassStage,sGuNativePassFighter,sGuNativePassSprites,sGuNativePassBarriers);
+    sGuNativePassStage=sGuNativePassFighter=sGuNativePassSprites=sGuNativePassBarriers=0;
     Psp_Log("psp: GU state batching: %u batches, %u changed states, %u draw-target switches\n",
             sGuStateCalls, sGuStateChanges, sGuTargetChanges);
     sGuStateCalls = sGuStateChanges = sGuTargetChanges = 0;
@@ -3153,6 +3223,9 @@ void Psp_GuStats(unsigned out[4]) {
     Psp_Log("psp: PSMT8 differential decode: checked=%u mismatched=%u rebuilt-from-scalar=%u screen-texture-lookup-preserved=%u\n",
             sT8RefVerified,sT8RefMismatch,sT8RefRebuilt,sFbReadLookupPreserved);
     sT8RefVerified=sT8RefMismatch=sT8RefRebuilt=sFbReadLookupPreserved=0;
+    Psp_Log("psp: offline native T8 packs: loaded=%u not-found=%u rejected=%u (opt-in, GS page+CLUT hash checked)\n",
+            sNativeT8PackLoaded,sNativeT8PackMissing,sNativeT8PackRejected);
+    sNativeT8PackLoaded=sNativeT8PackMissing=sNativeT8PackRejected=0;
     Psp_Log("psp: texture cache: entries=%d/%d vram=%u KB ram=%u KB peak=%u KB hits=%u misses=%u evicted=%u alloc-failed=%u oversized=%u\n",
             sTexCount, MAX_TEX, sTexMem / 1024u, sTexRamMem / 1024u,
             sTexRamPeak / 1024u, sTexCacheHits, sTexCacheMisses,
@@ -3171,11 +3244,11 @@ void Psp_GuStats(unsigned out[4]) {
        If few vectors use it, the next optimization should target the
        VU1 instruction interpreter rather than the VIF unpack loop. */
     {
-        unsigned microPerf[2];
-        extern void GsVu1_PspPredecodePerf(unsigned out[2]);
+        unsigned microPerf[3];
+        extern void GsVu1_PspPredecodePerf(unsigned out[3]);
         GsVu1_PspPredecodePerf(microPerf);
-        Psp_Log("psp: VU1 uploaded micro-op predecode: refreshed-words=%u interpreted-instructions=%u immutable-fields=yes (GS semantics unchanged)\n",
-                microPerf[0],microPerf[1]);
+        Psp_Log("psp: VU1 uploaded micro-op predecode: changed-words=%u skipped-identical=%u interpreted-instructions=%u (GS semantics unchanged)\n",
+                microPerf[0],microPerf[2],microPerf[1]);
     }
     {
         unsigned vuPerf[5];

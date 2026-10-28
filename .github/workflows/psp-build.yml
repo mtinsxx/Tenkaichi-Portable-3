@@ -96,6 +96,14 @@ jobs:
           gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/psp port/psp/test_vu1_predecode.c -o /tmp/tp3-vu1-predecode
           /tmp/tp3-vu1-predecode
 
+      - name: Test offline asset prep, native T8 read rules and PSP GU pass barriers
+        run: |
+          python3 tools/test_psp_native_assets.py
+          gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/psp port/psp/test_native_t8_pack.c -o /tmp/tp3-native-t8
+          /tmp/tp3-native-t8
+          gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/psp port/psp/test_native_gu_passes.c -o /tmp/tp3-gu-pass
+          /tmp/tp3-gu-pass
+
       - name: Test PSP GU returned drawbuffer pointer normalization
         run: |
           gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_gu_swap_check.c -o /tmp/bt3-psp-gu-swap

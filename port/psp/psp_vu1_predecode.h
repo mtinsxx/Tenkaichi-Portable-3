@@ -48,6 +48,21 @@ static inline void PspVu1_RefreshInstruction(PspVu1Instruction *decoded,
     memcpy(&hi,micro+pc*8u+4u,4);
     decoded[pc]=PspVu1_DecodeWords(lo,hi);
 }
+/* PSP: repeated MPG uploads commonly resend the exact same program
+ * between stage strips. Preserve the existing micro-RAM word, and skip
+ * re-decoding the two 32-bit halves when not actually modified. The
+ * interpreter's registers, MSCAL/MSCNT scheduling and game timing remain
+ * untouched. No collisions: compare the complete 32-bit word. */
+static inline int PspVu1_ApplyMpgWord(uint8_t *micro,
+                    PspVu1Instruction *decoded,
+                    unsigned byteOffset,uint32_t incoming) {
+    uint32_t old;
+    memcpy(&old,micro+byteOffset,4);
+    if (old==incoming) return 0;
+    memcpy(micro+byteOffset,&incoming,4);
+    PspVu1_RefreshInstruction(decoded,micro,byteOffset/8u);
+    return 1;
+}
 static inline unsigned PspVu1_UploadWordOffset(unsigned programAddr,
                                               unsigned wordIndex) {
     return ((programAddr*8u+wordIndex*4u)&0x3FFCu);
