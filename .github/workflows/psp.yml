@@ -123,6 +123,11 @@ jobs:
           gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/psp port/psp/test_tex_reuse_compaction.c -o /tmp/tp3-hot-tex-rebase
           /tmp/tp3-hot-tex-rebase
 
+      - name: Test PSP VU1 microcode upload-time native field predecode
+        run: |
+          gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/psp port/psp/test_vu1_predecode.c -o /tmp/tp3-vu1-predecode
+          /tmp/tp3-vu1-predecode
+
       - name: Test PSP GU returned drawbuffer pointer normalization
         run: |
           gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_gu_swap_check.c -o /tmp/bt3-psp-gu-swap
