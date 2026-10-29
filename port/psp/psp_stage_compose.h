@@ -9,6 +9,19 @@
  * Logical GS targets and framebuffer-as-texture snapshots stay separate.
  * This is a guard for a visual A/B experiment, not GS-accurate blending
  * or destination-alpha reconstruction. */
+/* Stage strips can submit hundreds of triangles AFTER the first
+ * accepted draw. Capturing the first triangle's framebuffer version
+ * causes the end-of-strip copy to fail the written==recorded test.
+ * Refresh only when this frame's final GPU content has a newer
+ * version (or when this is the first valid record of the frame). */
+static inline int PspStageCompose_NeedsFinalRecord(
+       unsigned frame,unsigned previousFrame,
+       unsigned written,unsigned previousWritten,
+       int previousValid) {
+    return written!=0u && (!previousValid || previousFrame!=frame ||
+                           written!=previousWritten);
+}
+
 static inline int PspStageCompose_ShouldCopy(unsigned now,
                                              unsigned stageFrame,
                                              unsigned stageWritten,

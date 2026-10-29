@@ -23,6 +23,20 @@ int main(void) {
     assert(!decision(15,15,4,3,stage,fighter,1,1,1,0));
     assert(!decision(15,15,3,3,0,fighter,1,1,1,0));
     assert(!decision(15,15,3,3,stage,0,1,1,1,0));
+    /* Real sequence: a stage's FIRST slow draw records version 1,
+       then 90 cached native triangles update the GE target. The
+       original capture stays at 1 and the guarded fighter copy
+       rejects it. Capture the final version before fighter starts. */
+    assert(PspStageCompose_NeedsFinalRecord(17,17,91,1,1));
+    assert(!decision(17,17,91,1,stage,fighter,1,1,1,0));
+    assert(decision(17,17,91,91,stage,fighter,1,1,1,0));
+    assert(!PspStageCompose_NeedsFinalRecord(17,17,91,91,1));
+    assert(PspStageCompose_NeedsFinalRecord(18,17,91,91,1));
+    assert(PspStageCompose_NeedsFinalRecord(18,17,91,91,0));
+    assert(!PspStageCompose_NeedsFinalRecord(18,17,0,91,1));
+    /* Same physical target already contains the stage; do not
+       overwrite it with a redundant/overlapping GPU copy. */
+    assert(!decision(17,17,91,91,stage,stage,1,1,1,0));
     puts("PSP stage -> fighter GE compositing guard tests passed");
     return 0;
 }
