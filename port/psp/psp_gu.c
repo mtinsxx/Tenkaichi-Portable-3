@@ -367,7 +367,7 @@ static uint32_t sFbMissingLastProducerFbp,sFbMissingLastProducerPsm;
 static uint32_t sFbMissingLastTextureTbp,sFbMissingLastTexturePsm;
 static unsigned sGsUploadSnapshot, sGsUploadUnsupported;
 static unsigned sStageCompositions, sStageComposeRejected, sStageTagged;
-static unsigned sStageFinalRecordUpdates, sStageFastGpuWrites;
+static unsigned sStageFinalRecordUpdates, sNativeFastGpuWrites;
 static unsigned sStageRejectOffscreen,sStageRejectSame,sStageRejectStale;
 static unsigned sStageRejectOwner,sStageRejectUnready,sStageRejectAlready,sStageRejectOther;
 static unsigned sTargetRebindInvalid, sTargetScreenCleared;
@@ -2800,7 +2800,7 @@ static void Psp_NativeEmitTriangle(PspStageFastBatch *b, int ctx,
                     PspGsFb_OnDraw(&sTargets[t].snapVersion);
                     sTargets[t].rendered=1;
                     sTargets[t].last=sFrame;
-                    ++sStageFastGpuWrites;
+                    ++sNativeFastGpuWrites;
                 }
         }
         sVbCount += 3;
@@ -3378,8 +3378,8 @@ void Psp_GuStats(unsigned out[4]) {
     sVbPeak=sVbArenaFences=0;
     sVbArenaFenceUs=0;
     Psp_Log("psp: stage composition version fix: end-of-strip-updates=%u native-fast-GPU-writes=%u (final stage version kept current)\n",
-            sStageFinalRecordUpdates,sStageFastGpuWrites);
-    sStageFinalRecordUpdates=sStageFastGpuWrites=0;
+            sStageFinalRecordUpdates,sNativeFastGpuWrites);
+    sStageFinalRecordUpdates=sNativeFastGpuWrites=0;
     Psp_Log("psp: native stage VU1 program4: batches=%u vertices=%u conservative-fallbacks=%u enabled=%d\n",
             sNativeStageBatches, sNativeStageVerts, sNativeStageFallback,
             gPspNativeStage4);
