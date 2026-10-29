@@ -2761,6 +2761,15 @@ static void Psp_NativeEmitTriangle(PspStageFastBatch *b, int ctx,
         /* The cached fast triangle bypasses GsGpu_Draw(). Do not
            bypass the exact 4 MiB GS feedback mirror as well. */
         Gs_PspMirrorDraw(3,ctx,tri);
+        /* The fast path bypasses the normal draw's target-generation
+           refresh. Update it after real PS2 GS pages are mirrored. */
+        {
+            unsigned t;
+            uint32_t fbp=(uint32_t)(gGs.frame[ctx]&511u);
+            for(t=0;t<MAX_TARGETS;t++)
+                if(sTargets[t].used && sTargets[t].fbp==fbp)
+                    sTargets[t].gen=gGsPageGen[fbp];
+        }
         sVbCount += 3;
         PspStageTriPack(&sVb[sVbCount-3], tri, &b->scale);
         /* Preserve real draw counts, but the GS draw profiler only
