@@ -172,6 +172,11 @@ static inline int PspStage4_ClipProject(PspStage4Vertex *out,
     inv = 1.0f / scr[3];
     z = scr[2] * inv;
     if (!__builtin_isfinite(z) || z < 0.0f || z > 16777215.0f) return 0;
+    /* A native GU triangle must not contain GS XYZ2 values that would
+       overflow/wrap its 16-bit 12.4 X/Y fields on original hardware.
+       The preflight rejects the whole strip to the VU1 interpreter. */
+    if (!PspStage4_GsCoordRepresentable(scr[0]*inv) ||
+        !PspStage4_GsCoordRepresentable(scr[1]*inv)) return 0;
     out->x = scr[0] * inv - ox;
     out->y = scr[1] * inv - oy;
     if (!__builtin_isfinite(out->x) || !__builtin_isfinite(out->y))
