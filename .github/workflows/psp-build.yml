@@ -243,6 +243,9 @@ jobs:
           gcc -std=c99 -Wall -Wextra -Werror -O2 port/psp/test_gs_experiments.c -o /tmp/bt3-psp-gs-test
           /tmp/bt3-psp-gs-test
 
+      - name: Test source-safe PSP native PSMT8 offline asset converter
+        run: python3 port/tools/test_convert_psp_t8.py
+
       - name: Build EBOOT.PBP
         env:
           PSPDEV: /usr/local/pspdev
