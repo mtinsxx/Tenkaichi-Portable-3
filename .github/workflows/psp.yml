@@ -128,6 +128,9 @@ jobs:
           gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/psp port/psp/test_vu1_predecode.c -o /tmp/tp3-vu1-predecode
           /tmp/tp3-vu1-predecode
 
+      - name: Test PSP PSMT8 offline GS memory converter and pack format
+        run: python3 port/psp/test_offline_t8_converter.py
+
       - name: Test offline asset prep, native T8 read rules and PSP GU pass barriers
         run: |
           python3 tools/test_psp_native_assets.py
