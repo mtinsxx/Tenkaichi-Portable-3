@@ -3636,6 +3636,8 @@ void Psp_GuStats(unsigned out[4]) {
     Psp_Log("psp: GS AFAIL pass: replays=%u HUD-stencil-legacy=%u; cross-PSM framebuffer aliases rejected=%u (5551 cannot encode swizzled/32-bit destination)\n",
             sGsAfailSecondPass, sGsAfailHudFallback, sFbPsmAliasRejected);
     sGsAfailSecondPass=sGsAfailHudFallback=sFbPsmAliasRejected=0;
+    Psp_Log("psp: native GS mirror scissor: fully-culled=%u pixel-candidates-skipped-k=%u (cumulative; PS2 GS test/scissor unchanged)\n",
+            Gs_PspMirrorBoundsCulled(),Gs_PspMirrorCandidatesAvoidedK());
     Psp_Log("psp: exact GS VRAM feedback mirror: tracked-fbps=%u CPU-rasterized-draws=%u dirty-8KB-pages=%u (PSMCT32 <-> PSMT8 share original 4MB GS bytes)\n",
             Gs_PspMirrorTrackedCount(),Gs_PspMirrorDrawCount(),
             Gs_PspMirrorDirtyPageCount());
