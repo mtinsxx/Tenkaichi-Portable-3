@@ -53,6 +53,7 @@
 #include "psp_gs_frame_mask.h"
 #include "psp_gs_afail.h"
 #include "psp_gs_fb_reconstruct.h"
+#include "psp_fb_feedback_provenance.h"
 #include "psp_fb_snapshot_recycle.h"
 #include "psp_stage_compose.h"
 #include "psp_tex_reuse.h"
@@ -241,8 +242,12 @@ static unsigned sNativeStageProjectionRejects;
 /* VU1 program6 had a no-op backend. GPU ground-shadow strips now
    use the exact screen/UV input layout and conservative clip guards. */
 static PspShadow6Vertex sShadow6Prepared[1024];
-static unsigned char sShadow6Valid[1024];
+static PspStageClipVertex sShadow6ClipSource[1024];
+static PspStageClipCache sShadow6ClipCache;
+static unsigned char sShadow6Valid[1024],sShadow6ClipNeeded[1024];
+static uint32_t sShadow6ReadyCount;
 static unsigned sShadow6Calls,sShadow6Triangles,sShadow6Skipped;
+static unsigned sShadow6ClippedFaces,sShadow6Outside,sShadow6UnsafeFallbacks;
 /* Native program-4 triangle GS batching: the original GsGpu_Draw
    still handles the first triangle of each strip, subsequent triangles
    reuse its texture/target/state and emit identical GU vertices. */
@@ -357,6 +362,9 @@ static unsigned sFbSnapshotRecycled;
 static unsigned sFbAliasHit, sFbAliasFallback, sFbAliasReupload;
 static unsigned sFbAliasUnrendered, sFbAliasSelf, sFbWorkOwnerChanges;
 static unsigned sFbPsmAliasRejected, sGsAfailSecondPass, sGsAfailHudFallback;
+static unsigned sFbMissingCrossPsmReadback,sFbMissingCrossPsmIndexed;
+static uint32_t sFbMissingLastProducerFbp,sFbMissingLastProducerPsm;
+static uint32_t sFbMissingLastTextureTbp,sFbMissingLastTexturePsm;
 static unsigned sGsUploadSnapshot, sGsUploadUnsupported;
 static unsigned sStageCompositions, sStageComposeRejected, sStageTagged;
 static unsigned sStageRejectOffscreen,sStageRejectSame,sStageRejectStale;
@@ -1875,8 +1883,21 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
         if (src >= 0) {
             Target *old = &sTargets[src];
             if(old->rendered &&
-               !PspVram_CanAliasGsPsm(old->psm,tpsm))
+               !PspVram_CanAliasGsPsm(old->psm,tpsm)) {
                 ++sFbPsmAliasRejected;
+                if(PspFbFeedback_MissingCrossPsmReadback(
+                      old->rendered,old->gen,
+                      gGsPageGen[old->fbp&511u],
+                      old->psm,tpsm,0)) {
+                    ++sFbMissingCrossPsmReadback;
+                    if(PspFbFeedback_IsIndexed(tpsm))
+                        ++sFbMissingCrossPsmIndexed;
+                    sFbMissingLastProducerFbp=old->fbp;
+                    sFbMissingLastProducerPsm=old->psm;
+                    sFbMissingLastTextureTbp=tbp;
+                    sFbMissingLastTexturePsm=tpsm;
+                }
+            }
             /* A GS memory page can hold a framebuffer at one time and an
                ordinary texture after a host-to-local upload. Do not bind
                stale PSP framebuffer VRAM when the GS upload generation has
@@ -2852,32 +2873,88 @@ void GsGpu_DrawVu4(int ctx, const float *vertices, uint32_t count,
     sNativeStageVerts += count;
     sStage4PreparedCount = 0;
 }
-void GsGpu_DrawVu6(int ctx, const float *vertices, uint32_t count,
-                   const float *consts) {
-    uint32_t i;
-    GsVertex tri[3];
+/* Original PS2 program6 generates both a strip and clipped triangle
+ * fans. Preflight ALL triangles before any GU state or draw commands. */
+int GsGpu_Shadow6CanRender(int ctx,const float *vertices,uint32_t count,
+                          const float *consts) {
+    uint32_t i,j;
     float ox,oy;
-    if (!sReady||!vertices||!consts||count<3u||count>1024u) return;
-    /* Program6's HLE sends ctx=-1 to use GS.PRIM's current context. */
-    if(ctx<0) ctx=(int)((gGs.prim>>9)&1u);
-    if(ctx>1) return;
-    ++sShadow6Calls;
+    sShadow6ReadyCount=0;
+    if(!sReady||!vertices||!consts||count<3u||count>1024u||
+       ctx<0||ctx>1)return 0;
     ox=(float)(gGs.xyoffset[ctx]&0xffffu)/16.0f;
     oy=(float)((gGs.xyoffset[ctx]>>32)&0xffffu)/16.0f;
+    PspStageClipCache_Reset(&sShadow6ClipCache);
     for(i=0;i<count;i++) {
+        const float *v=vertices+(size_t)i*16u;
+        if(!PspShadow6_ClipInput(&sShadow6ClipSource[i],v,consts))
+            goto unsupported;
         sShadow6Valid[i]=(unsigned char)PspShadow6_Transform(
-             &sShadow6Prepared[i],vertices+(size_t)i*16u,consts,ox,oy);
+             &sShadow6Prepared[i],v,consts,ox,oy);
     }
     for(i=0;i+2u<count;i++) {
-        uint32_t ids[3]={(i&1u)?i+1u:i,
-                         (i&1u)?i:i+1u,i+2u},j;
-        unsigned char valid[3],flags[3];
+        uint32_t ids[3]={(i&1u)?i+1u:i,(i&1u)?i:i+1u,i+2u};
+        PspStageClipVertex clipped[3];
+        unsigned mask=0u;
+        sShadow6ClipNeeded[i]=0u;
+        /* ADC flag on the third strip vertex prevents this triangle
+           from being visible, even when the VU clips its fan. */
+        if(sShadow6Prepared[ids[2]].drop)continue;
         for(j=0;j<3u;j++) {
-            valid[j]=sShadow6Valid[ids[j]];
-            flags[j]=sShadow6Prepared[ids[j]].drop;
+            clipped[j]=sShadow6ClipSource[ids[j]];
+            mask|=clipped[j].mask;
         }
-        if(!PspShadow6_TriangleVisible(valid,flags)) {
-            ++sShadow6Skipped; continue;
+        if(!mask) {
+            for(j=0;j<3u;j++)if(!sShadow6Valid[ids[j]])
+                goto unsupported;
+        } else {
+            if(!PspStageClipCache_Store(&sShadow6ClipCache,i,clipped,
+                                        consts+32u,ox,oy))
+                goto unsupported;
+            sShadow6ClipNeeded[i]=1u;
+        }
+    }
+    sShadow6ReadyCount=count;
+    return 1;
+unsupported:
+    ++sShadow6UnsafeFallbacks;
+    return 0;
+}
+void GsGpu_DrawVu6(int ctx,const float *vertices,uint32_t count,
+                   const float *consts) {
+    uint32_t i,j;
+    GsVertex tri[3];
+    (void)vertices;(void)consts;
+    if(!sReady||sShadow6ReadyCount!=count||count<3u)return;
+    sShadow6ReadyCount=0;
+    if(ctx<0||ctx>1)return;
+    ++sShadow6Calls;
+    for(i=0;i+2u<count;i++) {
+        uint32_t ids[3]={(i&1u)?i+1u:i,(i&1u)?i:i+1u,i+2u};
+        if(sShadow6Prepared[ids[2]].drop) {
+            ++sShadow6Skipped;
+            continue;
+        }
+        if(sShadow6ClipNeeded[i]) {
+            int n=(int)sShadow6ClipCache.length[i],k;
+            const PspStage4Vertex *fan=
+                &sShadow6ClipCache.projected[sShadow6ClipCache.begin[i]];
+            if(n==0){++sShadow6Outside;continue;}
+            for(k=1;k+1<n;k++) {
+                const PspStage4Vertex *pv[3]={&fan[0],&fan[k],&fan[k+1]};
+                for(j=0;j<3u;j++) {
+                    const PspStage4Vertex *v=pv[j];
+                    memset(&tri[j],0,sizeof(tri[j]));
+                    tri[j].x=v->x;tri[j].y=v->y;tri[j].z=v->z;
+                    tri[j].s=v->s;tri[j].t=v->t;tri[j].q=v->q;
+                    tri[j].r=v->r;tri[j].g=v->g;
+                    tri[j].b=v->b;tri[j].a=v->a;
+                }
+                GsGpu_Draw(3,ctx,tri);
+                ++sShadow6Triangles;
+                ++sShadow6ClippedFaces;
+            }
+            continue;
         }
         for(j=0;j<3u;j++) {
             const PspStage4Vertex *v=&sShadow6Prepared[ids[j]].p;
@@ -2887,8 +2964,6 @@ void GsGpu_DrawVu6(int ctx, const float *vertices, uint32_t count,
             tri[j].r=v->r;tri[j].g=v->g;
             tri[j].b=v->b;tri[j].a=v->a;
         }
-        /* Normal GS state path preserves depth/alpha/tex/scissor; this
-           is conservative until the shadow fast-batch is validated. */
         GsGpu_Draw(3,ctx,tri);
         ++sShadow6Triangles;
     }
@@ -3222,9 +3297,11 @@ void Psp_GuStats(unsigned out[4]) {
             sFighterNativeBatches,sFighterNativeVerts,
             sFighterNativeFallback,gPspNativeFighter);
     sFighterNativeBatches = sFighterNativeVerts = sFighterNativeFallback = 0;
-    Psp_Log("psp: native ground shadows VU1 program6: calls=%u triangles=%u invalid-or-flagged=%u\n",
-            sShadow6Calls,sShadow6Triangles,sShadow6Skipped);
+    Psp_Log("psp: native ground shadows VU1 program6: calls=%u triangles=%u flagged=%u clipped-faces=%u outside=%u interpreter-fallbacks=%u\n",
+            sShadow6Calls,sShadow6Triangles,sShadow6Skipped,
+            sShadow6ClippedFaces,sShadow6Outside,sShadow6UnsafeFallbacks);
     sShadow6Calls=sShadow6Triangles=sShadow6Skipped=0;
+    sShadow6ClippedFaces=sShadow6Outside=sShadow6UnsafeFallbacks=0;
     Psp_Log("psp: GE vertex arena: peak=%u/%u vertices, mid-list-syncs=%u, sync-ms=%u\n",
             sVbPeak,sVbCapacity,sVbArenaFences,
             (unsigned)(sVbArenaFenceUs/1000ull));
@@ -3486,6 +3563,11 @@ void Psp_GuStats(unsigned out[4]) {
     Psp_Log("psp: GS AFAIL pass: replays=%u HUD-stencil-legacy=%u; cross-PSM framebuffer aliases rejected=%u (5551 cannot encode swizzled/32-bit destination)\n",
             sGsAfailSecondPass, sGsAfailHudFallback, sFbPsmAliasRejected);
     sGsAfailSecondPass=sGsAfailHudFallback=sFbPsmAliasRejected=0;
+    Psp_Log("psp: GPU-only GS feedback missing cross-PSM readback: draws=%u indexed=%u last-producer-fbp=%u last-FRAME-PSM=%u last-TBP=%u last-TEX0-PSM=%u (no lossless 5551 to PS2 RGBA32 reconstruction)\n",
+            sFbMissingCrossPsmReadback,sFbMissingCrossPsmIndexed,
+            sFbMissingLastProducerFbp,sFbMissingLastProducerPsm,
+            sFbMissingLastTextureTbp,sFbMissingLastTexturePsm);
+    sFbMissingCrossPsmReadback=sFbMissingCrossPsmIndexed=0;
     Psp_Log("psp: stage-to-fighter background copy: staged=%u copied=%u guarded-skip=%u (native VU1, same/previous frame, GE 5551)\n",
             sStageTagged,sStageCompositions,sStageComposeRejected);
     sStageTagged=sStageCompositions=sStageComposeRejected=0;
