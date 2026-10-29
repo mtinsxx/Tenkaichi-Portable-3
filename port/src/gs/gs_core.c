@@ -29,6 +29,9 @@
 #include <string.h>
 #include <time.h>
 #include "gs_internal.h"
+#ifdef PORT_PSP
+#include "gs_raster_bounds.h"
+#endif
 
 #define SURF_W 1024
 #define SURF_H 1024
@@ -75,6 +78,8 @@ static uint32_t sGsMirrorPageStamp[TP3_GS_VRAM_PAGES];
 static uint32_t sGsMirrorDrawStamp;
 static int sGsMirrorActive;
 static unsigned sGsMirrorDraws,sGsMirrorDirtyPages,sGsMirrorTrackedCount;
+static unsigned sGsMirrorBoundsCulled;
+static unsigned long long sGsMirrorCandidatesAvoided;
 void Gs_PspMirrorEnableFbp(uint32_t fbp) {
     fbp &= 511u;
     if(!sGsMirrorTracked[fbp]) {
@@ -85,6 +90,10 @@ void Gs_PspMirrorEnableFbp(uint32_t fbp) {
 unsigned Gs_PspMirrorDrawCount(void) {return sGsMirrorDraws;}
 unsigned Gs_PspMirrorDirtyPageCount(void) {return sGsMirrorDirtyPages;}
 unsigned Gs_PspMirrorTrackedCount(void) {return sGsMirrorTrackedCount;}
+unsigned Gs_PspMirrorBoundsCulled(void) {return sGsMirrorBoundsCulled;}
+unsigned Gs_PspMirrorCandidatesAvoidedK(void) {
+    return (unsigned)(sGsMirrorCandidatesAvoided/1000u);
+}
 #endif
 static const uint8_t kBlock32[4][8] = {{0, 1, 4, 5, 16, 17, 20, 21}, {2, 3, 6, 7, 18, 19, 22, 23}, {8, 9, 12, 13, 24, 25, 28, 29}, {10, 11, 14, 15, 26, 27, 30, 31}};
 static const uint8_t kBlock16[8][4] = {{0, 2, 8, 10}, {1, 3, 9, 11}, {4, 6, 12, 14}, {5, 7, 13, 15}, {16, 18, 24, 26}, {17, 19, 25, 27}, {20, 22, 28, 30}, {21, 23, 29, 31}};
@@ -1174,6 +1183,21 @@ static void draw_sprite(Target *sf, int ctx, const Vertex *a, const Vertex *b) {
     if (x0 > x1) { const Vertex *t = a; a = b; b = t; x0 = a->x; x1 = b->x; }
     xa = (int)(x0 + 0.9375f); xb = (int)(x1 + 0.9375f);
     if (y0 <= y1) { ya = (int)(y0 + 0.9375f); yb = (int)(y1 + 0.9375f); } else { ya = (int)(y1 + 0.9375f); yb = (int)(y0 + 0.9375f); }
+#ifdef PORT_PSP
+    if (sGsMirrorActive) {
+        /* Exact same GS scissor used in pixel(). Avoid shading tens of
+           thousands of offscreen texels for every mirrored stage sprite. */
+        unsigned long long before=xa<xb && ya<yb ?
+                (unsigned long long)(xb-xa)*(unsigned long long)(yb-ya) : 0u;
+        if (!GsRaster_ClipWindow(&xa,&xb,&ya,&yb,gs.scissor[ctx],SURF_W,SURF_H)) {
+            ++sGsMirrorBoundsCulled;
+            sGsMirrorCandidatesAvoided+=before;
+            return;
+        }
+        if (before) sGsMirrorCandidatesAvoided+=before-
+                   (unsigned long long)(xb-xa)*(unsigned long long)(yb-ya);
+    }
+#endif
     for (y = ya; y < yb; y++) {
         float fy = y1 != y0 ? ((float)y - y0) / (y1 - y0) : 0.0f;
         for (x = xa; x < xb; x++) {
@@ -1203,6 +1227,25 @@ static void draw_triangle(Target *sf, int ctx, const Vertex *a, const Vertex *b,
     if (b->y > maxy) { maxy = b->y; } if (c->y > maxy) { maxy = c->y; }
     if (minx < 0) { minx = 0; } if (miny < 0) { miny = 0; }
     if (maxx > SURF_W - 1) { maxx = SURF_W - 1; } if (maxy > SURF_H - 1) { maxy = SURF_H - 1; }
+#ifdef PORT_PSP
+    if (sGsMirrorActive) {
+        /* Keep original edge equations and barycentric coordinates.
+           Only skip pixels the PS2 GS scissor would discard anyway. */
+        int xa=(int)minx, xb=(int)maxx+1;
+        int ya=(int)miny, yb=(int)maxy+1;
+        unsigned long long before=xa<xb && ya<yb ?
+            (unsigned long long)(xb-xa)*(unsigned long long)(yb-ya) : 0u;
+        if (!GsRaster_ClipWindow(&xa,&xb,&ya,&yb,gs.scissor[ctx],SURF_W,SURF_H)) {
+            ++sGsMirrorBoundsCulled;
+            sGsMirrorCandidatesAvoided+=before;
+            return;
+        }
+        if (before) sGsMirrorCandidatesAvoided+=before-
+                   (unsigned long long)(xb-xa)*(unsigned long long)(yb-ya);
+        minx=(float)xa;maxx=(float)(xb-1);
+        miny=(float)ya;maxy=(float)(yb-1);
+    }
+#endif
     for (y = (int)miny; y <= (int)maxy; y++) {
         for (x = (int)minx; x <= (int)maxx; x++) {
             /* weights in double precision and results rounded, not truncated: with float weights that sum to just
