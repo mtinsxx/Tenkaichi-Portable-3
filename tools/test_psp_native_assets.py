@@ -118,4 +118,36 @@ with tempfile.TemporaryDirectory() as tmp:
     except ValueError:
         pass
     assert not (root/"invalid"/"enable.txt").exists()
-print("Offline PSP T8/5551, GU color pack, mesh and animation preparation tests passed")
+with tempfile.TemporaryDirectory() as tmp:
+    root=Path(tmp)
+    # Program0/1 source: original VU1 inputs, 3 float4 per vertex.
+    # Two-bone weights, normals and UVs must be preserved unchanged.
+    vertices=[]
+    for i in range(4):
+        vertices.extend([float(i),2.0,3.0,0.25,
+                         0.0,1.0,0.0,0.0,
+                         0.125,0.75,0.0,0.0])
+    payload=struct.pack("<48f",*vertices)
+    raw=root/"fighter.vu"
+    raw.write_bytes(payload)
+    pack=conv.write_fighter_vu(Namespace(source=str(raw),output=None))
+    header=pack.read_bytes()[:24]
+    assert struct.unpack("<4s5I",header)==(
+        b"F3P1",1,4,48,conv.fnv(payload),conv.fnv(payload))
+    assert pack.read_bytes()[24:]==payload
+    assert pack.name==f"fighter_{conv.fnv(payload):08x}_4.f3p"
+    raw.write_bytes(payload[:-1])
+    try:
+        conv.write_fighter_vu(Namespace(source=str(raw),output=root/"bad.f3p"))
+        raise AssertionError("accepted truncated VU triangle packet")
+    except ValueError:
+        pass
+    raw.write_bytes(payload)
+    manifest={"assets":[{"type":"fighter-vu","source":"fighter.vu"}]}
+    (root/"assets.json").write_text(json.dumps(manifest))
+    native=root/"native"
+    conv.write_bundle(Namespace(manifest=str(root/"assets.json"),
+                                output=str(native)))
+    assert (native/pack.name).read_bytes()==pack.read_bytes()
+
+print("Offline PSP T8/5551, GU color pack, mesh, animation and original VU fighter preparation tests passed")
