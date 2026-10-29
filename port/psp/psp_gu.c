@@ -62,6 +62,10 @@
 #include "psp_native_t8_pack.h"
 #include "psp_native_color_pack.h"
 #include "psp_native_mesh_preview.h"
+/* Live VU1 fighter packets can be recorded from the original game and
+   strictly replayed as data into the established native skinning path. */
+extern const float *PspNativeFighterPacket_Resolve(const float *,unsigned);
+extern void PspNativeFighterPacket_Stats(void);
 #include "psp_native_t8_index_cache.h"
 #include "psp_t8_palette_refresh.h"
 #include "psp_native_gu_passes.h"
@@ -2628,6 +2632,11 @@ int Psp_FighterPrepare(const float *vertices, uint32_t count,
     ++sFrameFighterInputs;
     if (!gPspNativeFighter || !sReady || !vertices || !consts ||
         count < 3 || count > 38) return 0;
+    /* Material GS TEX0/PRIM are always supplied by the CURRENT game's
+       hle_program0/1 immediately before GsGpu_DrawVu0; all bone,
+       light and screen matrices are taken from current VU constants.
+       The saved resource provides ONLY exact original mesh vertices. */
+    vertices=PspNativeFighterPacket_Resolve(vertices,count);
     for (i = 0; i < count; ++i) {
         const float *v = vertices + i*12u;
         PspFighterVertex *out = &sFighterPrepared[i];
@@ -3443,6 +3452,7 @@ void Psp_GuStats(unsigned out[4]) {
     out[1] = sBatches;
     out[2] = sNewTex;
     out[3] = sSkipped;
+    PspNativeFighterPacket_Stats();
     Psp_Log("psp: native fighter VU1: batches=%u vertices=%u rejected=%u enabled=%d (2-bone skin, cel/fade)\n",
             sFighterNativeBatches,sFighterNativeVerts,
             sFighterNativeFallback,gPspNativeFighter);
