@@ -220,7 +220,7 @@ def write_bundle(args):
         if destination.exists():
             raise ValueError("duplicate or existing output: " + str(relative_out))
         keys = ("width","height","tbp","tbw","gen","psm","texa")
-        options = {key:item.get(key) for key in keys}
+        options = {key:item.get(key,0 if key=="texa" else None) for key in keys}
         options.update(source=str(source),output=str(destination))
         ns = argparse.Namespace(**options)
         converters = {"t8":write_t8,"color":write_color,
