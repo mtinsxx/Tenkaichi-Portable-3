@@ -1118,7 +1118,6 @@ __attribute__((hot)) static int hle_program6(void) {
     if (count < 3 || top + 3 + count * 4 > 1024) {
         return 0;
     }
-    Gs_RegWrite(0, (tag[0] >> 47) & 0x7FF);
     k = vview(0, 32, NULL);
     b = vview(top + 3, count * 4, &stable);
     /* the ground shadow's triangles lie in the shadow's own packet (gfxm_e_b.c ObjShadow_Draw:
@@ -1134,6 +1133,11 @@ __attribute__((hot)) static int hle_program6(void) {
     }
 #endif
     VSTABLE(stable);
+#ifdef PORT_PSP
+    if (!GsGpu_Shadow6CanRender((const float *)b,count,(const float *)k))
+        return 0; /* original VU1 microprogram handles ambiguous clipping */
+#endif
+    Gs_RegWrite(0, (tag[0] >> 47) & 0x7FF);
     GsGpu_DrawVu6(-1, (const float *)b, count, (const float *)k);
     sStatKicks++;
     return 1;
@@ -1228,13 +1232,15 @@ __attribute__((hot)) void GsVu1_Call(int addr) {
             sHle++;
             return;
         }
-        if (sP6Batches++ == 0 || hle_program6()) { /* the first MSCNT: the fan tag, only the clipper uses it */
+        if (sP6Batches++ == 0 || hle_program6()) { /* first MSCNT: the fan tag */
             sHle++;
             return;
         }
-        /* a batch the shader path cannot take (fewer than 3 vertices): nothing to draw either */
-        sHle++;
-        return;
+        /* A program6 batch whose native vertices/fan are unsafe must
+           run the PS2 microprogram, not silently vanish or emit a huge
+           2D PSP triangle. Recreate setup registers as for program4. */
+        run(0);
+        vu.pc = 21; /* program6 batch_start; see docs/systems/vu1/prog6.md */
     }
     if ((sProgSize == 94 || sProgSize == 104) && GsGpu_Enabled() && TP3_VU_ENV("BT3_VU_INTERP") == NULL) {
         /* MSCALF 0 only loads registers; every MSCNT is one batch */
