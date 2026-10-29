@@ -195,7 +195,7 @@ def port_sources():
     out += [(V / "psp_mem.c", "hard"), (V / "psp_file.c", "hard"), (V / "psp_main.c", "hard"),
             (V / "psp_battle_state.c", "hard"),
             (GEN / "psp_dat.c", "hard"), (S / "gs/gs_sony.c", "hard"),
-            (V / "psp_gfx.c", "hard"), (S / "gs/gs_core.c", "gs"), (S / "gs/gs_vu1.c", "gs"),
+            (V / "psp_gfx.c", "hard"), (V / "psp_native_mesh_preview.c", "hard"), (S / "gs/gs_core.c", "gs"), (S / "gs/gs_vu1.c", "gs"),
             (V / "psp_gu.c", "hard"), (V / "psp_audio.c", "gs"), (S / "gs/snd_adx.c", "gs"), (S / "gs/snd_se.c", "gs"),
             (V / "psp_wrap.c", "gs")]
     return out
