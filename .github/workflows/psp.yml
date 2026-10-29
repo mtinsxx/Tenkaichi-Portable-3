@@ -171,6 +171,11 @@ jobs:
           gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_stage_tri_batch.c -lm -o /tmp/bt3-psp-stage-tri-batch
           /tmp/bt3-psp-stage-tri-batch
 
+      - name: Test native VU1 stage vertex explosion protection
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_stage_vertex_projection_guard.c -lm -o /tmp/tp3-stage-vertex-guard
+          /tmp/tp3-stage-vertex-guard
+
       - name: Test native PSP VU1 stage six-plane clipping and projection
         run: |
           gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_stage4_clip.c -lm -o /tmp/bt3-psp-stage-clip
