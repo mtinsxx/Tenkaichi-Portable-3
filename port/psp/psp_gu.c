@@ -67,6 +67,7 @@
 #include "psp_gpu_probe.h"
 #include "psp_vram_address.h"
 #include "psp_tex_lifetime.h"
+#include "psp_vertex_arena.h"
 
 #define SCR_W 480
 #define SCR_H 272
@@ -213,7 +214,11 @@ static uint32_t sTexSerial = 1u;
 static unsigned sTexReuseHits, sTexReuseFullKeys;
 static unsigned sTexReuseUnrelatedUploads, sTexReuseEraseRepairs;
 static Target sTargets[MAX_TARGETS];
-static Vtx *sVb;             /* the vertex batch: ordinary memory, the engine reads it from there */
+/* GE draw commands reference pointers into this frame-owned immutable arena. */
+static Vtx *sVb, *sVbArena;
+static void *sVbArenaRaw;
+static unsigned sVbCursor, sVbPeak, sVbArenaFences;
+static unsigned long long sVbArenaFenceUs;
 static int sVbCount, sVbMode; /* count, and what primitives the batch holds */
 static int sReady;
 static unsigned sFrame;
@@ -541,6 +546,8 @@ static int tex_evict_one(void) {
         flush();
         sceGuFinish();
         sceGuSync(0, 0);
+        sVbCursor=0;
+        sVb=sVbArena;
         sceGuStart(GU_DIRECT, sList);
         sAppliedValid = 0; /* fresh command list; force state setup */
         sTexEvictFenceUs += Psp_TimeUs() - begin;
@@ -1709,10 +1716,37 @@ static void flush(void) {
         ++sGsAfailSecondPass;
         sSt=original; /* next state_apply restores the primary GE state */
     }
+    /* DrawArray stores a pointer; the GPU may not have read it yet.
+       Move to an untouched span rather than overwriting the last draw. */
+    sVbCursor=PspGuVertexArena_Commit(sVbCursor,(unsigned)sVbCount);
+    if(sVbCursor>sVbPeak) sVbPeak=sVbCursor;
+    sVb=sVbArena+sVbCursor;
     sVbCount = 0;
     sBatches++;
 }
 
+/* Reuse arena memory only once the previous GE list has completed.
+ * A GPU fence is necessary only if this frame exceeds the RAM budget. */
+static void psp_gu_vb_reserve(unsigned incoming) {
+    if (PspGuVertexArena_Fits(sVbCursor,(unsigned)sVbCount,
+                             incoming,PSP_GU_VERTEX_FRAME_VERTICES))
+        return;
+    flush();
+    if (PspGuVertexArena_Fits(sVbCursor,0u,incoming,
+                             PSP_GU_VERTEX_FRAME_VERTICES))
+        return;
+    {
+        unsigned long long begin=Psp_TimeUs();
+        sceGuFinish();
+        sceGuSync(0,0);
+        sceGuStart(GU_DIRECT,sList);
+        sAppliedValid=0;
+        sVbCursor=0;
+        sVb=sVbArena;
+        ++sVbArenaFences;
+        sVbArenaFenceUs+=Psp_TimeUs()-begin;
+    }
+}
 /* All GPU primitives still preserve original GS submission order.
  * Separate GE batches only where native stage, actor or sprite
  * ownership changes. No arbitrary sorting across GS depth, alpha,
@@ -2269,6 +2303,7 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
             memcpy(&sSt, &n, sizeof(n));
         }
     }
+    psp_gu_vb_reserve((unsigned)n);
     d = &sVb[sVbCount];
     sVbMode = mode;
     if (tme) {
@@ -2687,6 +2722,7 @@ static void Psp_NativeEmitTriangle(PspStageFastBatch *b, int ctx,
         int i;
         if (sVbCount + 3 > MAX_QUEUE) flush();
         if (sVbCount && sVbMode != GU_TRIANGLES) flush();
+        psp_gu_vb_reserve(3u);
         sVbMode = GU_TRIANGLES;
         PspStageTriPack(&sVb[sVbCount], tri, &b->scale);
         sVbCount += 3;
@@ -2910,6 +2946,8 @@ void GsGpu_FrameEnd(void) {
     sceGuFinish();
     sceGuSync(0, 0);
     sProfGeSyncUs += Psp_TimeUs() - t0;
+    sVbCursor=0;
+    sVb=sVbArena;
     /* Capture the physical outputs of GE, not just submitted triangles.
        Sampling waits for the existing sync above: NO extra GPU stall.
        Keep diagnostic logs bounded on very long battles. Never touch
@@ -3066,10 +3104,13 @@ int Psp_GuInit(void) {
     Psp_Log("psp: fighter dual-layer triangle batching [fighter-gs-batch-20261026] native_fighter_batch=%d\n",
             gPspNativeFighterBatch);
     sMainDrawOffset = FB0_OFF;
-    sVb = malloc(MAX_QUEUE * sizeof(Vtx));
-    if (sVb == NULL) {
-        return 0;
-    }
+    sVbArenaRaw=malloc((size_t)PSP_GU_VERTEX_FRAME_VERTICES*sizeof(Vtx)+63u);
+    if (!sVbArenaRaw) return 0;
+    sVbArena=(Vtx *)(((uintptr_t)sVbArenaRaw+63u)&~(uintptr_t)63u);
+    sVb=sVbArena;
+    sVbCursor=0;
+    Psp_Log("psp: GE vertex lifetime arena=%u KiB (per-batch immutable until GE sync)\n",
+            (unsigned)(PSP_GU_VERTEX_FRAME_VERTICES*sizeof(Vtx)/1024u));
     /* Reserve predictable scratch space before the game's textures
        fill the newlib heap. In the old code these allocations failed
        repeatedly at runtime, evicting GS textures under GPU fences.
@@ -3174,6 +3215,11 @@ void Psp_GuStats(unsigned out[4]) {
     Psp_Log("psp: native ground shadows VU1 program6: calls=%u triangles=%u invalid-or-flagged=%u\n",
             sShadow6Calls,sShadow6Triangles,sShadow6Skipped);
     sShadow6Calls=sShadow6Triangles=sShadow6Skipped=0;
+    Psp_Log("psp: GE vertex arena: peak=%u/%u vertices, mid-list-syncs=%u, sync-ms=%u\n",
+            sVbPeak,(unsigned)PSP_GU_VERTEX_FRAME_VERTICES,sVbArenaFences,
+            (unsigned)(sVbArenaFenceUs/1000ull));
+    sVbPeak=sVbArenaFences=0;
+    sVbArenaFenceUs=0;
     Psp_Log("psp: native stage VU1 program4: batches=%u vertices=%u conservative-fallbacks=%u enabled=%d\n",
             sNativeStageBatches, sNativeStageVerts, sNativeStageFallback,
             gPspNativeStage4);
