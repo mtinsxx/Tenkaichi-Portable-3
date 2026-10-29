@@ -60,6 +60,7 @@
 #include "psp_tex_lru.h"
 #include "psp_t8_native.h"
 #include "psp_native_t8_pack.h"
+#include "psp_native_color_pack.h"
 #include "psp_native_t8_index_cache.h"
 #include "psp_t8_palette_refresh.h"
 #include "psp_native_gu_passes.h"
@@ -207,6 +208,7 @@ static unsigned sT8IndexHits, sT8IndexMisses, sT8IndexStored;
 static unsigned sT8IndexEvicted, sT8IndexOversize;
 static unsigned sT8ClutRefreshed, sT8ClutRefreshBlocked;
 static unsigned sNativeT8PackLoaded, sNativeT8PackMissing, sNativeT8PackRejected;
+static unsigned sNativeColorPackLoaded,sNativeColorPackMissing,sNativeColorPackRejected;
 static unsigned sFbReadLookupPreserved;
 static Tex sTex[MAX_TEX];
 static int sTexCount;
@@ -933,6 +935,53 @@ static int psp_native_t8_try_read(uint32_t tbp,uint32_t tbw,uint32_t gen,
     ++sNativeT8PackLoaded;
     return 1;
 }
+/* Pack is already GU 5551/8888. Validate content hash, GS page
+   generation, TEXA and 17 live GS samples before bypassing decoding. */
+static int psp_native_color_try_read(uint32_t tbp,uint32_t tbw,
+          uint32_t psm,uint32_t gen,uint64_t texa,
+          unsigned w,unsigned h,uint8_t *dst,int *guFmt) {
+    static int enabled=-1;
+    char path[208];
+    PspNativeColorHeader header;
+    FILE *fp;
+    unsigned i,bytes;
+    if(enabled<0) {
+        fp=fopen("ms0:/PSP/GAME/BT3/native/enable.txt","rb");
+        enabled=fp!=NULL;
+        if(fp)fclose(fp);
+    }
+    if(!enabled||!dst||!guFmt||!w||!h||w>512u||h>512u)return 0;
+    snprintf(path,sizeof(path),
+       "ms0:/PSP/GAME/BT3/native/c_%04x_%08x_%02x_%ux%u_%016llx.n4p",
+       tbp,gen,psm,w,h,(unsigned long long)texa);
+    fp=fopen(path,"rb");
+    if(!fp) {++sNativeColorPackMissing;return 0;}
+    if(fread(&header,1,sizeof(header),fp)!=sizeof(header)||
+       !PspNativeColor_Match(&header,tbp,tbw,psm,gen,texa,w,h)) {
+        ++sNativeColorPackRejected;fclose(fp);return 0;
+    }
+    bytes=PspNativeColor_Bytes(w,h,header.format);
+    if(fread(dst,1,bytes,fp)!=bytes||
+       PspNativeColor_Fnv(dst,bytes)!=header.dataFnv||
+       fgetc(fp)!=EOF) {
+        ++sNativeColorPackRejected;fclose(fp);return 0;
+    }
+    fclose(fp);
+    for(i=0;i<17u;i++) {
+        unsigned pixel=(i*2654435761u)%(w*h);
+        uint32_t c=Gs_Expand(Gs_VramRead(tbp,tbw,psm,pixel%w,pixel/w),psm);
+        if(!PspNativeColor_CheckPixel(dst,pixel,header.format,c)) {
+            ++sNativeColorPackRejected;
+            if(sNativeColorPackRejected<5u)
+                Psp_Log("psp: native color pack rejected: live GS sample mismatch TBP=%u PSM=%u pixel=%u\n",
+                        tbp,psm,pixel);
+            return 0;
+        }
+    }
+    *guFmt=header.format==PSP_NATIVE_COLOR_5551?GU_PSM_5551:GU_PSM_8888;
+    ++sNativeColorPackLoaded;
+    return 1;
+}
 /* GS memory -> a PSP texture for the current TEX0. NULL when there is no room. */
 /* The stored bits of a rectangle of GS memory, as gs_core.c has them. The Vita has block-at-a-time versions of
    these two in a Vita-only part of that file (one address computation per block instead of per pixel); the PSP
@@ -957,6 +1006,7 @@ static void *texture_get(int ctx, unsigned lodCap, int white_sprite,
     Tex *t;
     uint32_t *px;
     int fmt;
+    int packedNativeColor=0;
     int paletteRefreshCandidate=-1;
     /* Sampling the lookup one time in 32 avoids adding a clock syscall
        to every cache hit during the game's thousands of GS draws. */
@@ -1241,6 +1291,24 @@ static void *texture_get(int ctx, unsigned lodCap, int white_sprite,
         ++sProfDecodeCount;
         return ptr;
     }
+    /* Preconverted PSP-native texture: skip GS unpack and CPU pixel
+       conversion. Missing or invalid packs use the proven live reader. */
+    if(bits>8u && !white_sprite && readW==tw && readH==th &&
+       (psm==0u||psm==1u||psm==2u||psm==0x0au)) {
+        if(sScratchRgba && Psp_TexUseScratch(
+                readW*readH*4u, PSP_TEX_SCRATCH_RGBA_BYTES))
+            px=sScratchRgba;
+        else
+            px=tex_malloc_pressure((size_t)readW*readH*4u);
+        if(px) {
+            if(psp_native_color_try_read(tbp,tbw,psm,gen,texa,
+                                         tw,th,(uint8_t *)px,&fmt)) {
+                packedNativeColor=1;
+                goto native_color_ready;
+            }
+            tex_temp_free(px);
+        }
+    }
     if (sScratchRgba && Psp_TexUseScratch(
             readW * readH * 4u, PSP_TEX_SCRATCH_RGBA_BYTES)) {
         px = sScratchRgba;
@@ -1320,6 +1388,7 @@ static void *texture_get(int ctx, unsigned lodCap, int white_sprite,
     /* Gs_Expand() already applies TEXA for 16/24-bit pixels and CLUT entries.
        Applying GS TEXA again here changed the alpha of valid palette colours. */
     fmt = alphaNeed ? GU_PSM_8888 : GU_PSM_5551;
+native_color_ready:
     {
         unsigned bytes = (unsigned)(tw * th * (fmt == GU_PSM_8888 ? 4 : 2));
         unsigned alignedBytes = (bytes + 63u) & ~63u;
@@ -1345,7 +1414,12 @@ static void *texture_get(int ctx, unsigned lodCap, int white_sprite,
            Converting RGBA32 -> 5551 in-place is safe in increasing index
            order: each destination consumes 2 bytes while each future
            input pixel starts 4 bytes later. */
-        if (fmt == GU_PSM_8888) {
+        if (packedNativeColor) {
+            if(doSwizzle)
+                swizzle((unsigned char *)ptr,(const unsigned char *)px,tw,th,
+                        fmt==GU_PSM_8888?4:2);
+            else memcpy(ptr,px,bytes);
+        } else if (fmt == GU_PSM_8888) {
             for (i = 0; i < tw * th; ++i) {
                 uint32_t c = px[i], a = alpha_scale((c >> 24) & 0xFF);
                 px[i] = (c & 0x00FFFFFFu) | (a << 24);
@@ -3557,6 +3631,9 @@ void Psp_GuStats(unsigned out[4]) {
     sT8ClutRefreshed=sT8ClutRefreshBlocked=0;
     Psp_Log("psp: offline native T8 packs: loaded=%u not-found=%u rejected=%u (opt-in, GS page+CLUT hash checked)\n",
             sNativeT8PackLoaded,sNativeT8PackMissing,sNativeT8PackRejected);
+    Psp_Log("psp: native preconverted color packs: loaded=%u missing=%u rejected=%u\n",
+            sNativeColorPackLoaded,sNativeColorPackMissing,sNativeColorPackRejected);
+    sNativeColorPackLoaded=sNativeColorPackMissing=sNativeColorPackRejected=0;
     sNativeT8PackLoaded=sNativeT8PackMissing=sNativeT8PackRejected=0;
     Psp_Log("psp: texture cache: entries=%d/%d vram=%u KB ram=%u KB peak=%u KB hits=%u misses=%u evicted=%u alloc-failed=%u oversized=%u\n",
             sTexCount, MAX_TEX, sTexMem / 1024u, sTexRamMem / 1024u,
