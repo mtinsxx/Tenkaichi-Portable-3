@@ -151,6 +151,21 @@ The **legacy** control type (available for developer rebuilds):
   so reported FPS from this build is not a clean performance benchmark.
 - The port runs the PSP at its standard clocks (333 MHz): no overclocking.
 
+## Experimental native PSP texture conversion
+
+The test EBOOT can convert **PSMT8 texture-index sources** from your own
+game into reusable `T8P1` packs on the PSP/PPSSPP itself (no PC needed).
+Place empty `enable.txt` and `capture.txt` in
+`PSP/GAME/BT3/native/`, play once to capture up to 16 validated sources,
+then **remove `capture.txt` before testing speed** while keeping
+`enable.txt` and the saved `.tp8` packs. The EBOOT can reuse matching
+index bytes on later runs, while reading live palettes from GS memory.
+No texture, model or animation assets ship with this repository.
+
+This is a **partial texture conversion**, not a full native PSP asset
+pipeline or verified improvement to battle FPS. See
+[conversion instructions and limitations](docs/psp/NATIVE_T8_CONVERTER_20261029.md).
+
 ## Building
 
 See [docs/psp/building.md](docs/psp/building.md). The build needs the pspdev toolchain (psp-gcc and pspsdk),

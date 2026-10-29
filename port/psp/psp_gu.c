@@ -207,6 +207,8 @@ static unsigned sT8IndexHits, sT8IndexMisses, sT8IndexStored;
 static unsigned sT8IndexEvicted, sT8IndexOversize;
 static unsigned sT8ClutRefreshed, sT8ClutRefreshBlocked;
 static unsigned sNativeT8PackLoaded, sNativeT8PackMissing, sNativeT8PackRejected;
+static unsigned sNativeT8Captured,sNativeT8CaptureFailed,sNativeT8CaptureSkipped;
+#define PSP_NATIVE_T8_CAPTURE_LIMIT 16u
 static unsigned sFbReadLookupPreserved;
 static Tex sTex[MAX_TEX];
 static int sTexCount;
@@ -933,6 +935,56 @@ static int psp_native_t8_try_read(uint32_t tbp,uint32_t tbw,uint32_t gen,
     ++sNativeT8PackLoaded;
     return 1;
 }
+/* Bounded conversion of verified GS PSMT8 planes to reusable native packs.
+ * Capture is OPT-IN (native/capture.txt) because Memory Stick writes can
+ * hurt live battle FPS. Up to 16 unique images per process, no overwrite.
+ * A later run can load the identical index plane using enable.txt.
+ * The content-address is indexGen, not the palette-dependent gen: the
+ * original GS CLUT remains live and may change independently. */
+static void psp_native_t8_try_capture(uint32_t tbp,uint32_t tbw,
+                    uint32_t indexGen,unsigned w,unsigned h,
+                    const uint8_t *data) {
+    static int enabled=-1;
+    PspNativeT8Header hdr;
+    char path[192];
+    FILE *fp;
+    size_t n;
+    if(!data || !w || !h || w>512u || h>512u ||
+       tbp>16383u || tbw>63u) return;
+    if(enabled<0) {
+        fp=fopen("ms0:/PSP/GAME/BT3/native/capture.txt","rb");
+        enabled=fp!=NULL;
+        if(fp) {fclose(fp);Psp_Log("psp: native T8 one-time capture enabled (16 assets max per launch)\n");}
+    }
+    if(!enabled || sNativeT8Captured>=PSP_NATIVE_T8_CAPTURE_LIMIT)return;
+    n=(size_t)w*(size_t)h;
+    if(snprintf(path,sizeof(path),
+             "ms0:/PSP/GAME/BT3/native/t8_%04x_%08x_%ux%u.tp8",
+             tbp,indexGen,w,h)>= (int)sizeof(path))return;
+    /* Immutable files and source identity: never replace a different
+       texture when another GS TBW uses the same TBP/content hash. */
+    fp=fopen(path,"rb");
+    if(fp) {fclose(fp);++sNativeT8CaptureSkipped;return;}
+    fp=fopen(path,"wb");
+    if(!fp) {++sNativeT8CaptureFailed;return;}
+    memcpy(hdr.magic,"T8P1",4u);
+    hdr.version=1u;hdr.tbp=tbp;hdr.tbw=tbw;
+    hdr.gen=indexGen;hdr.width=w;hdr.height=h;
+    hdr.dataFnv=PspNativeT8_Fnv(data,n);
+    if(fwrite(&hdr,1,sizeof(hdr),fp)!=sizeof(hdr) ||
+       fwrite(data,1,n,fp)!=n) {
+        fclose(fp);
+        remove(path);
+        ++sNativeT8CaptureFailed;
+        return;
+    }
+    if(fclose(fp)!=0) {
+        remove(path);
+        ++sNativeT8CaptureFailed;
+        return;
+    }
+    ++sNativeT8Captured;
+}
 /* GS memory -> a PSP texture for the current TEX0. NULL when there is no room. */
 /* The stored bits of a rectangle of GS memory, as gs_core.c has them. The Vita has block-at-a-time versions of
    these two in a Vita-only part of that file (one address computation per block instead of per pixel); the PSP
@@ -1150,8 +1202,14 @@ static void *texture_get(int ctx, unsigned lodCap, int white_sprite,
             memcpy(idx,sT8IndexBuffer[cachedSlot],(size_t)readW*readH);
             ++sT8IndexHits;
         } else {
+            int fromNativePack;
             ++sT8IndexMisses;
-            if (!psp_native_t8_try_read(tbp,tbw,gen,readW,readH,idx) &&
+            /* indexGen hashes the SOURCE GS pixels, deliberately excluding
+               CLUT changes. Pack files are never accepted without their
+               exact header/FNV and scalar GS pixel spot checks. */
+            fromNativePack=psp_native_t8_try_read(
+                    tbp,tbw,indexGen,readW,readH,idx);
+            if (!fromNativePack &&
                 !Gs_VramReadIdx8(tbp,tbw,psm,readW,readH,idx,readW)) {
                 tex_temp_free(idx);
                 return NULL;
@@ -1173,8 +1231,14 @@ static void *texture_get(int ctx, unsigned lodCap, int white_sprite,
                     for(y=0;y<readH;y++) for(x=0;x<readW;x++)
                         idx[y*readW+x]=(uint8_t)Gs_VramRead(tbp,tbw,psm,x,y);
                     ++sT8RefRebuilt;
+                    /* Bad packs cannot be repaired by capture overwrite:
+                       preserve the old file, but do not poison RAM. */
+                    fromNativePack=0;
                 }
             }
+            if(!fromNativePack)
+                psp_native_t8_try_capture(tbp,tbw,indexGen,
+                                           readW,readH,idx);
             {
                 int slot=PspNativeT8Cache_Choose(sT8IndexSlots,
                          PSP_NATIVE_T8_CACHE_SLOTS,readW,readH,
@@ -3555,9 +3619,11 @@ void Psp_GuStats(unsigned out[4]) {
     Psp_Log("psp: native T8 palette-only refresh: reused=%u in-flight-blocked=%u (source hash unchanged, GE fenced)\n",
             sT8ClutRefreshed,sT8ClutRefreshBlocked);
     sT8ClutRefreshed=sT8ClutRefreshBlocked=0;
-    Psp_Log("psp: offline native T8 packs: loaded=%u not-found=%u rejected=%u (opt-in, GS page+CLUT hash checked)\n",
-            sNativeT8PackLoaded,sNativeT8PackMissing,sNativeT8PackRejected);
+    Psp_Log("psp: native T8 packs: loaded=%u not-found=%u rejected=%u captured=%u capture-skipped=%u capture-failed=%u (source-only GS hash; live CLUT; opt-in)\n",
+            sNativeT8PackLoaded,sNativeT8PackMissing,sNativeT8PackRejected,
+            sNativeT8Captured,sNativeT8CaptureSkipped,sNativeT8CaptureFailed);
     sNativeT8PackLoaded=sNativeT8PackMissing=sNativeT8PackRejected=0;
+    /* Capture counts stay cumulative to enforce the per-launch write cap. */
     Psp_Log("psp: texture cache: entries=%d/%d vram=%u KB ram=%u KB peak=%u KB hits=%u misses=%u evicted=%u alloc-failed=%u oversized=%u\n",
             sTexCount, MAX_TEX, sTexMem / 1024u, sTexRamMem / 1024u,
             sTexRamPeak / 1024u, sTexCacheHits, sTexCacheMisses,
