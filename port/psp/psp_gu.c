@@ -367,6 +367,7 @@ static uint32_t sFbMissingLastProducerFbp,sFbMissingLastProducerPsm;
 static uint32_t sFbMissingLastTextureTbp,sFbMissingLastTexturePsm;
 static unsigned sGsUploadSnapshot, sGsUploadUnsupported;
 static unsigned sStageCompositions, sStageComposeRejected, sStageTagged;
+static unsigned sStageFinalRecordUpdates, sStageFastGpuWrites;
 static unsigned sStageRejectOffscreen,sStageRejectSame,sStageRejectStale;
 static unsigned sStageRejectOwner,sStageRejectUnready,sStageRejectAlready,sStageRejectOther;
 static unsigned sTargetRebindInvalid, sTargetScreenCleared;
@@ -2452,6 +2453,16 @@ static void Psp_StageRecordDraw(int ctx) {
         Target *t=&sTargets[i];
         if (t->used && t->fbp==fbp && t->rendered &&
             t->color==sSt.target && t->snapVersion.written) {
+            if (!PspStageCompose_NeedsFinalRecord(
+                     sFrame,sStageImage.frame,t->snapVersion.written,
+                     sStageImage.written,sStageImage.valid) &&
+                sStageImage.fbp==fbp &&
+                sStageImage.backing==(uintptr_t)t->color)
+                return;
+            if(sStageImage.valid && sStageImage.frame==sFrame &&
+               sStageImage.fbp==fbp &&
+               sStageImage.written!=t->snapVersion.written)
+                ++sStageFinalRecordUpdates;
             sStageImage.frame=sFrame;
             sStageImage.written=t->snapVersion.written;
             sStageImage.fbp=fbp;
@@ -2779,8 +2790,18 @@ static void Psp_NativeEmitTriangle(PspStageFastBatch *b, int ctx,
             unsigned t;
             uint32_t fbp=(uint32_t)(gGs.frame[ctx]&511u);
             for(t=0;t<MAX_TARGETS;t++)
-                if(sTargets[t].used && sTargets[t].fbp==fbp)
+                if(sTargets[t].used && sTargets[t].fbp==fbp &&
+                   sTargets[t].color==sSt.target) {
                     sTargets[t].gen=gGsPageGen[fbp];
+                    /* The cached fast triangle writes GPU pixels but
+                       bypasses GsGpu_Draw's normal OnDraw() tracking.
+                       Advance the version so a final stage record
+                       reflects ALL triangles, not the first one. */
+                    PspGsFb_OnDraw(&sTargets[t].snapVersion);
+                    sTargets[t].rendered=1;
+                    sTargets[t].last=sFrame;
+                    ++sStageFastGpuWrites;
+                }
         }
         sVbCount += 3;
         PspStageTriPack(&sVb[sVbCount-3], tri, &b->scale);
@@ -2912,6 +2933,12 @@ void GsGpu_DrawVu4(int ctx, const float *vertices, uint32_t count,
         }
         Psp_NativeEmitTriangle(&fast, ctx, tri, 0);
     }
+    /* The previous capture happened on the FIRST slow triangle, then
+       hundreds of fast triangles changed its target. Record the FINAL
+       GS target version after the entire native VU1 strip has been
+       submitted, so the stage-to-fighter GE copy sees coherent pixels
+       from the same command list. No extra GPU sync or texture copy. */
+    Psp_StageRecordDraw(ctx);
     ++sNativeStageBatches;
     sNativeStageVerts += count;
     sStage4PreparedCount = 0;
@@ -3350,6 +3377,9 @@ void Psp_GuStats(unsigned out[4]) {
             (unsigned)(sVbArenaFenceUs/1000ull));
     sVbPeak=sVbArenaFences=0;
     sVbArenaFenceUs=0;
+    Psp_Log("psp: stage composition version fix: end-of-strip-updates=%u native-fast-GPU-writes=%u (final stage version kept current)\n",
+            sStageFinalRecordUpdates,sStageFastGpuWrites);
+    sStageFinalRecordUpdates=sStageFastGpuWrites=0;
     Psp_Log("psp: native stage VU1 program4: batches=%u vertices=%u conservative-fallbacks=%u enabled=%d\n",
             sNativeStageBatches, sNativeStageVerts, sNativeStageFallback,
             gPspNativeStage4);
