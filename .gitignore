@@ -25,9 +25,13 @@ saves/
 bt3_settings.txt
 docs/port/img/
 port/tests/ps2float/test.elf
-port/tests/ps2float/*.o
 /bt3-setup
 /Tenkaichi3Decomp-setup
 /play.sh
 install.log
 port/build_release/
+
+*.PBP
+*.pbp
+*.elf
+*.log
