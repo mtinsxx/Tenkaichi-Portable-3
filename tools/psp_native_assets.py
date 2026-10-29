@@ -13,6 +13,52 @@ import struct
 from pathlib import Path
 
 T8_HDR = struct.Struct("<4s7I")
+COLOR_HDR = struct.Struct("<4s7IQ3I")
+COLOR_PSMS = (0x00, 0x01, 0x02, 0x0A)  # PS2 GS color only; no depth aliases
+
+def write_color(args):
+    """Preconvert expanded GS colour bytes to PSP-native 5551/8888.
+
+    Source layout is tightly packed expanded GS R,G,B,A (as returned by
+    Gs_Expand) with GS alpha units; NOT generic PNG sRGB conversion.
+    Runtime validates the page hash/TEXA and 17 source pixels.
+    White-font texture variants and textures with changed GS data
+    retain the live decoder, never the offline pack.
+    """
+    size_ok(args.width, args.height)
+    if args.psm not in COLOR_PSMS:
+        raise ValueError("color packs only support PSMCT32/24/16/16S")
+    if (not (0 <= args.tbp <= 0x3FFF and 0 <= args.tbw <= 63
+             and 0 <= args.gen <= 0xFFFFFFFF
+             and 0 <= args.texa <= 0xFFFFFFFFFFFFFFFF)):
+        raise ValueError("invalid GS page identity or TEXA")
+    raw = Path(args.source).read_bytes()
+    if len(raw) != args.width * args.height * 4:
+        raise ValueError("expected exactly width*height*4 expanded GS RGBA bytes")
+    gs = struct.unpack("<" + "I" * (len(raw) // 4), raw)
+    # Match the existing texture_get() alphaNeed condition exactly.
+    opaque = all(((c >> 24) & 255) in (0, 128, 255) for c in gs)
+    fmt = 1 if opaque else 2
+    if fmt == 1:
+        converted = b"".join(struct.pack("<H",
+            ((c >> 3) & 31) | (((c >> 11) & 31) << 5) |
+            (((c >> 19) & 31) << 10) | ((int((c >> 24) != 0)) << 15))
+            for c in gs)
+    else:
+        def scaled(c):
+            a = (c >> 24) & 255
+            a = 255 if a >= 128 else a * 2
+            return (c & 0xFFFFFF) | (a << 24)
+        converted = b"".join(struct.pack("<I", scaled(c)) for c in gs)
+    out = Path(args.output) if args.output else Path(
+        f"c_{args.tbp:04x}_{args.gen:08x}_{args.psm:02x}_"
+        f"{args.width}x{args.height}_{args.texa:016x}.n4p")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(COLOR_HDR.pack(b"N4P1", 1, args.tbp,args.tbw,
+        args.psm,args.gen,args.width,args.height,args.texa,0,fmt,
+        fnv(converted)) + converted)
+    return out
+
 
 
 def fnv(data: bytes) -> int:
@@ -129,7 +175,7 @@ def write_animation(args):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("type", choices=("t8", "rgba5551", "mesh", "animation"))
+    p.add_argument("type", choices=("t8", "rgba5551", "color", "mesh", "animation"))
     p.add_argument("--source", required=True, help="user's own extracted raw/JSON input")
     p.add_argument("--output")
     p.add_argument("--width", type=int)
@@ -137,14 +183,19 @@ def main():
     p.add_argument("--tbp", type=lambda v: int(v, 0))
     p.add_argument("--tbw", type=lambda v: int(v, 0))
     p.add_argument("--gen", type=lambda v: int(v, 0))
+    p.add_argument("--psm", type=lambda v: int(v, 0))
+    p.add_argument("--texa", type=lambda v: int(v, 0), default=0)
     args = p.parse_args()
-    if args.type in ("t8", "rgba5551") and (args.width is None or args.height is None):
+    if args.type in ("t8", "rgba5551", "color") and (args.width is None or args.height is None):
         p.error("texture conversions require --width and --height")
     if args.type == "t8" and (args.tbp is None or args.tbw is None or args.gen is None):
         p.error("t8 requires GS --tbp, --tbw and --gen from a matching texture")
-    if args.type != "t8" and not args.output:
+    if args.type == "color" and (args.tbp is None or args.tbw is None or
+                                 args.gen is None or args.psm is None):
+        p.error("color requires --tbp, --tbw, --gen and --psm")
+    if args.type not in ("t8", "color") and not args.output:
         p.error("--output is required for non-T8 conversions")
-    fn = {"t8": write_t8, "rgba5551": write_rgba5551,
+    fn = {"t8": write_t8, "color": write_color, "rgba5551": write_rgba5551,
           "mesh": write_mesh, "animation": write_animation}[args.type]
     print("Wrote:", fn(args))
 
