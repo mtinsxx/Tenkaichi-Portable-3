@@ -83,4 +83,39 @@ with tempfile.TemporaryDirectory() as tmp:
         raise AssertionError("depth texture erroneously packaged as color")
     except ValueError:
         pass
+with tempfile.TemporaryDirectory() as tmp:
+    root=Path(tmp)
+    (root/"idx.raw").write_bytes(bytes(range(16)))
+    (root/"expanded.raw").write_bytes(bytes([60,40,20,128]*4))
+    (root/"fighter.json").write_text(json.dumps({"vertices":[
+        {"position":[0,0,0],"uv":[0,0],"rgba":[255,255,255,255]}],
+        "indices":[0,0,0]}),encoding="utf-8")
+    (root/"walk.json").write_text(json.dumps({"frames":[[[1.0]*12]]}),
+                                  encoding="utf-8")
+    manifest={"assets":[
+        {"type":"t8","source":"idx.raw","width":4,"height":4,
+         "tbp":336,"tbw":8,"gen":0x1234},
+        {"type":"color","source":"expanded.raw","width":2,"height":2,
+         "tbp":368,"tbw":8,"gen":0x5678,"psm":0},
+        {"type":"mesh","source":"fighter.json","output":"fighter.m3p"},
+        {"type":"animation","source":"walk.json","output":"walk.a3p"}]}
+    (root/"assets.json").write_text(json.dumps(manifest),encoding="utf-8")
+    out=root/"native"
+    conv.write_bundle(Namespace(manifest=str(root/"assets.json"),output=str(out)))
+    assert (out/"enable.txt").exists()
+    assert (out/"native_manifest.json").exists()
+    assert len(json.loads((out/"native_manifest.json").read_text())["assets"])==4
+    assert (out/"t8_0150_00001234_4x4.tp8").exists()
+    assert (out/"c_0170_00005678_00_2x2_0000000000000000.n4p").exists()
+    assert (out/"fighter.m3p").read_bytes()[:4]==b"M3P1"
+    assert (out/"walk.a3p").read_bytes()[:4]==b"A3P1"
+    manifest["assets"][0]["source"]="../unauthorized"
+    (root/"assets.json").write_text(json.dumps(manifest),encoding="utf-8")
+    try:
+        conv.write_bundle(Namespace(manifest=str(root/"assets.json"),
+                                    output=str(root/"invalid")))
+        raise AssertionError("bundle permitted traversal")
+    except ValueError:
+        pass
+    assert not (root/"invalid"/"enable.txt").exists()
 print("Offline PSP T8/5551, GU color pack, mesh and animation preparation tests passed")
