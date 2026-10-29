@@ -173,10 +173,73 @@ def write_animation(args):
     return result
 
 
+def write_bundle(args):
+    """Convert a manifest of separately extracted assets without bundling game data.
+
+    Texture packs have runtime integration. Meshes and animations are only
+    PSP-portable intermediate files until the GU mesh loader is implemented.
+    enable.txt is created LAST, after every requested conversion succeeds.
+    """
+    manifest = Path(args.manifest).resolve()
+    root = Path(args.output).resolve()
+    entries = json.loads(manifest.read_text(encoding="utf-8"))
+    if not isinstance(entries, dict) or not isinstance(entries.get("assets"), list):
+        raise ValueError("expected JSON object containing an assets array")
+    if not entries["assets"]:
+        raise ValueError("bundle must contain at least one extracted asset")
+    root.mkdir(parents=True, exist_ok=True)
+    generated = []
+    for item in entries["assets"]:
+        if not isinstance(item, dict) or item.get("type") not in (
+                "color", "t8", "mesh", "animation"):
+            raise ValueError("unsupported asset type")
+        kind = item["type"]
+        relative = Path(item["source"])
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError("asset input path must be relative to manifest")
+        source = (manifest.parent / relative).resolve()
+        if not source.is_file():
+            raise ValueError(f"missing input asset: {relative}")
+        if kind == "color":
+            stem = (f"c_{item['tbp']:04x}_{item['gen']:08x}_{item['psm']:02x}_"
+                    f"{item['width']}x{item['height']}_{item.get('texa',0):016x}.n4p")
+        elif kind == "t8":
+            stem = (f"t8_{item['tbp']:04x}_{item['gen']:08x}_"
+                    f"{item['width']}x{item['height']}.tp8")
+        else:
+            stem = item.get("output")
+            if not stem:
+                raise ValueError("mesh/animation requires a destination filename")
+            ext = ".m3p" if kind == "mesh" else ".a3p"
+            if Path(stem).suffix != ext:
+                raise ValueError(f"{kind} needs {ext} output extension")
+        relative_out = Path(stem)
+        if relative_out.is_absolute() or ".." in relative_out.parts:
+            raise ValueError("bundle output path must remain inside output folder")
+        destination = root / relative_out
+        if destination.exists():
+            raise ValueError("duplicate or existing output: " + str(relative_out))
+        keys = ("width","height","tbp","tbw","gen","psm","texa")
+        options = {key:item.get(key) for key in keys}
+        options.update(source=str(source),output=str(destination))
+        ns = argparse.Namespace(**options)
+        converters = {"t8":write_t8,"color":write_color,
+                      "mesh":write_mesh,"animation":write_animation}
+        out = converters[kind](ns)
+        generated.append({"type":kind,"file":relative_out.as_posix(),
+                          "bytes":out.stat().st_size,
+                          "fnv":f"{fnv(out.read_bytes()):08x}"})
+    (root/"native_manifest.json").write_text(
+       json.dumps({"format":1,"assets":generated},
+                  indent=2,sort_keys=True)+"\n",encoding="utf-8")
+    (root/"enable.txt").write_text("native-asset-packs-v1\n",encoding="ascii")
+    return root
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("type", choices=("t8", "rgba5551", "color", "mesh", "animation"))
-    p.add_argument("--source", required=True, help="user's own extracted raw/JSON input")
+    p.add_argument("type", choices=("t8", "rgba5551", "color", "mesh", "animation", "bundle"))
+    p.add_argument("--source", help="user's own extracted raw/JSON input")
+    p.add_argument("--manifest", help="JSON list of already extracted assets")
     p.add_argument("--output")
     p.add_argument("--width", type=int)
     p.add_argument("--height", type=int)
@@ -186,6 +249,13 @@ def main():
     p.add_argument("--psm", type=lambda v: int(v, 0))
     p.add_argument("--texa", type=lambda v: int(v, 0), default=0)
     args = p.parse_args()
+    if args.type == "bundle":
+        if not args.manifest or not args.output:
+            p.error("bundle needs --manifest and --output directory")
+        print("Converted asset bundle:", write_bundle(args))
+        return
+    if not args.source:
+        p.error("asset conversion requires --source")
     if args.type in ("t8", "rgba5551", "color") and (args.width is None or args.height is None):
         p.error("texture conversions require --width and --height")
     if args.type == "t8" and (args.tbp is None or args.tbw is None or args.gen is None):
