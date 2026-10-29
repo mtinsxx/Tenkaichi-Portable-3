@@ -1134,11 +1134,13 @@ __attribute__((hot)) static int hle_program6(void) {
 #endif
     VSTABLE(stable);
 #ifdef PORT_PSP
-    if (!GsGpu_Shadow6CanRender((const float *)b,count,(const float *)k))
+    if (!GsGpu_Shadow6CanRender((int)((tag[0]>>56)&1u),
+                                 (const float *)b,count,(const float *)k))
         return 0; /* original VU1 microprogram handles ambiguous clipping */
 #endif
     Gs_RegWrite(0, (tag[0] >> 47) & 0x7FF);
-    GsGpu_DrawVu6(-1, (const float *)b, count, (const float *)k);
+    GsGpu_DrawVu6((int)((tag[0]>>56)&1u),
+                  (const float *)b, count, (const float *)k);
     sStatKicks++;
     return 1;
 }
