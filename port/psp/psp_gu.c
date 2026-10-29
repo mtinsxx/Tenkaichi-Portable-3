@@ -217,7 +217,7 @@ static Target sTargets[MAX_TARGETS];
 /* GE draw commands reference pointers into this frame-owned immutable arena. */
 static Vtx *sVb, *sVbArena;
 static void *sVbArenaRaw;
-static unsigned sVbCursor, sVbPeak, sVbArenaFences;
+static unsigned sVbCapacity, sVbCursor, sVbPeak, sVbArenaFences;
 static unsigned long long sVbArenaFenceUs;
 static int sVbCount, sVbMode; /* count, and what primitives the batch holds */
 static int sReady;
@@ -1729,11 +1729,11 @@ static void flush(void) {
  * A GPU fence is necessary only if this frame exceeds the RAM budget. */
 static void psp_gu_vb_reserve(unsigned incoming) {
     if (PspGuVertexArena_Fits(sVbCursor,(unsigned)sVbCount,
-                             incoming,PSP_GU_VERTEX_FRAME_VERTICES))
+                             incoming,sVbCapacity))
         return;
     flush();
     if (PspGuVertexArena_Fits(sVbCursor,0u,incoming,
-                             PSP_GU_VERTEX_FRAME_VERTICES))
+                             sVbCapacity))
         return;
     {
         unsigned long long begin=Psp_TimeUs();
@@ -3104,13 +3104,23 @@ int Psp_GuInit(void) {
     Psp_Log("psp: fighter dual-layer triangle batching [fighter-gs-batch-20261026] native_fighter_batch=%d\n",
             gPspNativeFighterBatch);
     sMainDrawOffset = FB0_OFF;
-    sVbArenaRaw=malloc((size_t)PSP_GU_VERTEX_FRAME_VERTICES*sizeof(Vtx)+63u);
+    /* Homebrew PSP may have limited heap when game tables are resident.
+       Degrade arena size before failing boot; a smaller arena simply
+       requires more GPU fences, never unsafe reuse of queued vertices. */
+    {
+        unsigned capacity=PSP_GU_VERTEX_FRAME_VERTICES;
+        while (capacity>=MAX_QUEUE) {
+            sVbArenaRaw=malloc((size_t)capacity*sizeof(Vtx)+63u);
+            if(sVbArenaRaw) { sVbCapacity=capacity; break; }
+            capacity/=2u;
+        }
+    }
     if (!sVbArenaRaw) return 0;
     sVbArena=(Vtx *)(((uintptr_t)sVbArenaRaw+63u)&~(uintptr_t)63u);
     sVb=sVbArena;
     sVbCursor=0;
     Psp_Log("psp: GE vertex lifetime arena=%u KiB (per-batch immutable until GE sync)\n",
-            (unsigned)(PSP_GU_VERTEX_FRAME_VERTICES*sizeof(Vtx)/1024u));
+            (unsigned)(sVbCapacity*sizeof(Vtx)/1024u));
     /* Reserve predictable scratch space before the game's textures
        fill the newlib heap. In the old code these allocations failed
        repeatedly at runtime, evicting GS textures under GPU fences.
@@ -3216,7 +3226,7 @@ void Psp_GuStats(unsigned out[4]) {
             sShadow6Calls,sShadow6Triangles,sShadow6Skipped);
     sShadow6Calls=sShadow6Triangles=sShadow6Skipped=0;
     Psp_Log("psp: GE vertex arena: peak=%u/%u vertices, mid-list-syncs=%u, sync-ms=%u\n",
-            sVbPeak,(unsigned)PSP_GU_VERTEX_FRAME_VERTICES,sVbArenaFences,
+            sVbPeak,sVbCapacity,sVbArenaFences,
             (unsigned)(sVbArenaFenceUs/1000ull));
     sVbPeak=sVbArenaFences=0;
     sVbArenaFenceUs=0;
