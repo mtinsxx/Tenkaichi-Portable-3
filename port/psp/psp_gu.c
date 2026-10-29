@@ -53,6 +53,7 @@
 #include "psp_gs_frame_mask.h"
 #include "psp_gs_afail.h"
 #include "psp_gs_fb_reconstruct.h"
+#include "psp_fb_feedback_provenance.h"
 #include "psp_fb_snapshot_recycle.h"
 #include "psp_stage_compose.h"
 #include "psp_tex_reuse.h"
@@ -361,6 +362,9 @@ static unsigned sFbSnapshotRecycled;
 static unsigned sFbAliasHit, sFbAliasFallback, sFbAliasReupload;
 static unsigned sFbAliasUnrendered, sFbAliasSelf, sFbWorkOwnerChanges;
 static unsigned sFbPsmAliasRejected, sGsAfailSecondPass, sGsAfailHudFallback;
+static unsigned sFbMissingCrossPsmReadback,sFbMissingCrossPsmIndexed;
+static uint32_t sFbMissingLastProducerFbp,sFbMissingLastProducerPsm;
+static uint32_t sFbMissingLastTextureTbp,sFbMissingLastTexturePsm;
 static unsigned sGsUploadSnapshot, sGsUploadUnsupported;
 static unsigned sStageCompositions, sStageComposeRejected, sStageTagged;
 static unsigned sStageRejectOffscreen,sStageRejectSame,sStageRejectStale;
@@ -1879,8 +1883,21 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
         if (src >= 0) {
             Target *old = &sTargets[src];
             if(old->rendered &&
-               !PspVram_CanAliasGsPsm(old->psm,tpsm))
+               !PspVram_CanAliasGsPsm(old->psm,tpsm)) {
                 ++sFbPsmAliasRejected;
+                if(PspFbFeedback_MissingCrossPsmReadback(
+                      old->rendered,old->gen,
+                      gGsPageGen[old->fbp&511u],
+                      old->psm,tpsm,0)) {
+                    ++sFbMissingCrossPsmReadback;
+                    if(PspFbFeedback_IsIndexed(tpsm))
+                        ++sFbMissingCrossPsmIndexed;
+                    sFbMissingLastProducerFbp=old->fbp;
+                    sFbMissingLastProducerPsm=old->psm;
+                    sFbMissingLastTextureTbp=tbp;
+                    sFbMissingLastTexturePsm=tpsm;
+                }
+            }
             /* A GS memory page can hold a framebuffer at one time and an
                ordinary texture after a host-to-local upload. Do not bind
                stale PSP framebuffer VRAM when the GS upload generation has
@@ -3546,6 +3563,11 @@ void Psp_GuStats(unsigned out[4]) {
     Psp_Log("psp: GS AFAIL pass: replays=%u HUD-stencil-legacy=%u; cross-PSM framebuffer aliases rejected=%u (5551 cannot encode swizzled/32-bit destination)\n",
             sGsAfailSecondPass, sGsAfailHudFallback, sFbPsmAliasRejected);
     sGsAfailSecondPass=sGsAfailHudFallback=sFbPsmAliasRejected=0;
+    Psp_Log("psp: GPU-only GS feedback missing cross-PSM readback: draws=%u indexed=%u last-producer-fbp=%u last-FRAME-PSM=%u last-TBP=%u last-TEX0-PSM=%u (no lossless 5551 to PS2 RGBA32 reconstruction)\n",
+            sFbMissingCrossPsmReadback,sFbMissingCrossPsmIndexed,
+            sFbMissingLastProducerFbp,sFbMissingLastProducerPsm,
+            sFbMissingLastTextureTbp,sFbMissingLastTexturePsm);
+    sFbMissingCrossPsmReadback=sFbMissingCrossPsmIndexed=0;
     Psp_Log("psp: stage-to-fighter background copy: staged=%u copied=%u guarded-skip=%u (native VU1, same/previous frame, GE 5551)\n",
             sStageTagged,sStageCompositions,sStageComposeRejected);
     sStageTagged=sStageCompositions=sStageComposeRejected=0;
