@@ -40,6 +40,13 @@ extern uint32_t gGsPageGen[512]; /* bumped whenever an upload writes into that 8
 #ifdef PORT_PSP
 /* Advances on GS uploads and software palette paints. */
 extern uint32_t gGsPspTextureEpoch;
+/* Exact PS2 GS 4 MiB virtual VRAM reference mirror for cross-format
+   framebuffer feedback; producer FBPs are enrolled on first mismatch. */
+void Gs_PspMirrorEnableFbp(uint32_t fbp);
+void Gs_PspMirrorDraw(int type,int ctx,const GsVertex *v);
+unsigned Gs_PspMirrorDrawCount(void);
+unsigned Gs_PspMirrorDirtyPageCount(void);
+unsigned Gs_PspMirrorTrackedCount(void);
 #endif
 extern unsigned gGsFrame;
 

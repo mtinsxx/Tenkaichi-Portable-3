@@ -68,6 +68,24 @@ static unsigned sStat[8]; /* per frame: DMA tags, VIF codes, DIRECT quadwords, G
    "columns" inside the block. The tables are the hardware's; the two indexed ones are generated from their first
    column (odd columns exchange the two halves of every group of eight). ---- */
 static uint32_t sVram[1 << 20];
+#ifdef PORT_PSP
+#include "gs_feedback_mirror.h"
+static uint8_t sGsMirrorTracked[TP3_GS_VRAM_PAGES];
+static uint32_t sGsMirrorPageStamp[TP3_GS_VRAM_PAGES];
+static uint32_t sGsMirrorDrawStamp;
+static int sGsMirrorActive;
+static unsigned sGsMirrorDraws,sGsMirrorDirtyPages,sGsMirrorTrackedCount;
+void Gs_PspMirrorEnableFbp(uint32_t fbp) {
+    fbp &= 511u;
+    if(!sGsMirrorTracked[fbp]) {
+        sGsMirrorTracked[fbp]=1u;
+        ++sGsMirrorTrackedCount;
+    }
+}
+unsigned Gs_PspMirrorDrawCount(void) {return sGsMirrorDraws;}
+unsigned Gs_PspMirrorDirtyPageCount(void) {return sGsMirrorDirtyPages;}
+unsigned Gs_PspMirrorTrackedCount(void) {return sGsMirrorTrackedCount;}
+#endif
 static const uint8_t kBlock32[4][8] = {{0, 1, 4, 5, 16, 17, 20, 21}, {2, 3, 6, 7, 18, 19, 22, 23}, {8, 9, 12, 13, 24, 25, 28, 29}, {10, 11, 14, 15, 26, 27, 30, 31}};
 static const uint8_t kBlock16[8][4] = {{0, 2, 8, 10}, {1, 3, 9, 11}, {4, 6, 12, 14}, {5, 7, 13, 15}, {16, 18, 24, 26}, {17, 19, 25, 27}, {20, 22, 28, 30}, {21, 23, 29, 31}};
 static const uint8_t kBlock16S[8][4] = {{0, 2, 16, 18}, {1, 3, 17, 19}, {8, 10, 24, 26}, {9, 11, 25, 27}, {4, 6, 20, 22}, {5, 7, 21, 23}, {12, 14, 28, 30}, {13, 15, 29, 31}};
@@ -543,6 +561,20 @@ static inline void plane_bump(uint32_t b, int planes) {
     sPlaneGen[b][2] += (uint32_t)(planes >> 2 & 1);
 }
 #define VRAM_TOUCH(n) do { uint32_t b_ = (n) & 0x3FFF; if (sBlk[b_].up != 0) { blk_real(b_); } if (write) { sBlk[b_].dirty = 1; plane_bump(b_, psm_planes(psm)); } } while (0)
+#elif defined(PORT_PSP)
+/* Each software-mirrored draw changes only the PS2 GS pages that its
+ * pixels touched. A single generation bump per dirty 8 KiB page
+ * invalidates both PSMCT32 and PSMT8 views of the exact same bytes.
+ * Non-mirrored GS uploads retain their existing generation tracking. */
+#define VRAM_TOUCH(n) do { \
+    if (write && sGsMirrorActive && \
+        PspGsMirrorMarkPage(sGsMirrorPageStamp,(n),sGsMirrorDrawStamp)) { \
+        unsigned pg=PspGsMirrorPageOfBlock((n)); \
+        ++gGsPageGen[pg]; \
+        ++gGsPageSig[pg]; \
+        ++sGsMirrorDirtyPages; \
+    } \
+} while(0)
 #else
 #define VRAM_TOUCH(n) ((void)0)
 #endif
@@ -1205,6 +1237,42 @@ static void draw_line(Target *sf, int ctx, const Vertex *a, const Vertex *b) {
         pixel(sf, ctx, (int)(a->x + dx * f), (int)(a->y + dy * f), b->z, vcol(b));
     }
 }
+
+#ifdef PORT_PSP
+/* Software reference rasterization into the SAME 4 MiB GS memory that
+ * Gs_VramRead(PSMCT32/PSMT8) accesses. It runs only for producer FBPs
+ * enrolled after a mismatched texture-readback was observed, to avoid
+ * doubling every stage, HUD and character draw on the PSP CPU.
+ * Shader/native VU1 triangles pass via the same backend call site.
+ * No RGB5551->RGBA32 approximation and no extra 4 MiB allocation. */
+void Gs_PspMirrorDraw(int type,int ctx,const GsVertex *v) {
+    static Target mirrorTarget;
+    uint32_t fbp;
+    if(!v||ctx<0||ctx>1||sGsMirrorActive)return;
+    fbp=(uint32_t)(gs.frame[ctx]&511u);
+    if(!PspGsMirrorShouldDraw(sGsMirrorTracked,fbp))return;
+    if(++sGsMirrorDrawStamp==0u) {
+        memset(sGsMirrorPageStamp,0,sizeof(sGsMirrorPageStamp));
+        sGsMirrorDrawStamp=1u;
+    }
+    sGsMirrorActive=1;
+    mirrorTarget.fbp=fbp;
+    mirrorTarget.drawn=0;
+    switch(type) {
+    case 0: pixel(&mirrorTarget,ctx,(int)v[0].x,(int)v[0].y,
+                  v[0].z,vcol(&v[0])); break;
+    case 1: draw_line(&mirrorTarget,ctx,&v[0],&v[1]); break;
+    case 3: draw_triangle(&mirrorTarget,ctx,&v[0],&v[1],&v[2]); break;
+    case 6: draw_sprite(&mirrorTarget,ctx,&v[0],&v[1]); break;
+    default: break;
+    }
+    sGsMirrorActive=0;
+    ++sGsMirrorDraws;
+    /* Invalidate the per-draw hot texture reuse table, even if a pass
+       writes only Z/alpha bytes or a framebuffer's upper byte. */
+    if(mirrorTarget.drawn)++gGsPspTextureEpoch;
+}
+#endif
 
 #ifdef PORT_VITA
 /* Direct parts (see GR_PART below): while a kept part is walked to be kept as groups, which GS registers it reads

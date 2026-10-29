@@ -1884,6 +1884,13 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
             Target *old = &sTargets[src];
             if(old->rendered &&
                !PspVram_CanAliasGsPsm(old->psm,tpsm)) {
+                /* The PS2 reads the SAME 4 MiB GS bytes through a
+                   different PSM; the PSP's 5551 snapshot is not those
+                   bytes. From the NEXT draw to this producer FBP, use
+                   the existing GS software reference rasterizer to
+                   write actual RGBA32/alpha/depth bits and allow the
+                   PSMT8 decoder to read its real byte layout. */
+                Gs_PspMirrorEnableFbp(old->fbp);
                 ++sFbPsmAliasRejected;
                 if(PspFbFeedback_MissingCrossPsmReadback(
                       old->rendered,old->gen,
@@ -2325,6 +2332,12 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
         }
     }
     psp_gu_vb_reserve((unsigned)n);
+    /* Source textures are already decoded for this draw. Now update the
+       software GS image before the PSP GE writes its separate 5551
+       framebuffer. This maintains draw order and correct read-before-write
+       when the next PS2 draw samples the producer as PSMT8. */
+    Gs_PspMirrorDraw(type,ctx,v);
+    sTargets[targetIndex].gen=gGsPageGen[(uint32_t)fbp & 511u];
     d = &sVb[sVbCount];
     sVbMode = mode;
     if (tme) {
@@ -2745,8 +2758,20 @@ static void Psp_NativeEmitTriangle(PspStageFastBatch *b, int ctx,
         if (sVbCount && sVbMode != GU_TRIANGLES) flush();
         psp_gu_vb_reserve(3u);
         sVbMode = GU_TRIANGLES;
-        PspStageTriPack(&sVb[sVbCount], tri, &b->scale);
+        /* The cached fast triangle bypasses GsGpu_Draw(). Do not
+           bypass the exact 4 MiB GS feedback mirror as well. */
+        Gs_PspMirrorDraw(3,ctx,tri);
+        /* The fast path bypasses the normal draw's target-generation
+           refresh. Update it after real PS2 GS pages are mirrored. */
+        {
+            unsigned t;
+            uint32_t fbp=(uint32_t)(gGs.frame[ctx]&511u);
+            for(t=0;t<MAX_TARGETS;t++)
+                if(sTargets[t].used && sTargets[t].fbp==fbp)
+                    sTargets[t].gen=gGsPageGen[fbp];
+        }
         sVbCount += 3;
+        PspStageTriPack(&sVb[sVbCount-3], tri, &b->scale);
         /* Preserve real draw counts, but the GS draw profiler only
            measures slow-path calls; see the separate fast count. */
         ++sDraws;
@@ -3563,6 +3588,9 @@ void Psp_GuStats(unsigned out[4]) {
     Psp_Log("psp: GS AFAIL pass: replays=%u HUD-stencil-legacy=%u; cross-PSM framebuffer aliases rejected=%u (5551 cannot encode swizzled/32-bit destination)\n",
             sGsAfailSecondPass, sGsAfailHudFallback, sFbPsmAliasRejected);
     sGsAfailSecondPass=sGsAfailHudFallback=sFbPsmAliasRejected=0;
+    Psp_Log("psp: exact GS VRAM feedback mirror: tracked-fbps=%u CPU-rasterized-draws=%u dirty-8KB-pages=%u (PSMCT32 <-> PSMT8 share original 4MB GS bytes)\n",
+            Gs_PspMirrorTrackedCount(),Gs_PspMirrorDrawCount(),
+            Gs_PspMirrorDirtyPageCount());
     Psp_Log("psp: GPU-only GS feedback missing cross-PSM readback: draws=%u indexed=%u last-producer-fbp=%u last-FRAME-PSM=%u last-TBP=%u last-TEX0-PSM=%u (no lossless 5551 to PS2 RGBA32 reconstruction)\n",
             sFbMissingCrossPsmReadback,sFbMissingCrossPsmIndexed,
             sFbMissingLastProducerFbp,sFbMissingLastProducerPsm,
