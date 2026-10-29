@@ -9,6 +9,24 @@ typedef struct PspStageTriScale {
     int tw, th, fst, modulate, flat;
 } PspStageTriScale;
 
+/* Framebuffer texture snapshots are RAM copies of GPU-produced GS
+ * targets. Their texture coordinates use logical TEX0 dimensions and
+ * scaled GS-to-PSP backing pixels, unlike an ordinary native texture.
+ * Such draws must retain the full GsGpu_Draw path; the fast-stage
+ * batcher cannot safely reuse a generic texture scale for them. */
+static inline int PspStageTri_OrdinaryTexture(const void *tex,
+                                      const void *colorTarget,
+                                      const void *frameSnapshot) {
+    return !tex || (tex != colorTarget && tex != frameSnapshot);
+}
+
+#include "psp_vertex_arena.h"
+static inline int PspStageTri_FastStateSafe(int applied,
+                                   unsigned cursor, unsigned pending,
+                                   unsigned capacity) {
+    return applied && PspGuVertexArena_Fits(cursor,pending,3u,capacity);
+}
+
 static inline unsigned PspStageTriAlpha(unsigned a) {
     return a >= 0x80u ? 255u : a * 2u;
 }
