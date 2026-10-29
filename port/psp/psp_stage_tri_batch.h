@@ -20,6 +20,13 @@ static inline int PspStageTri_OrdinaryTexture(const void *tex,
     return !tex || (tex != colorTarget && tex != frameSnapshot);
 }
 
+#include "psp_vertex_arena.h"
+static inline int PspStageTri_FastStateSafe(int applied,
+                                   unsigned cursor, unsigned pending,
+                                   unsigned capacity) {
+    return applied && PspGuVertexArena_Fits(cursor,pending,3u,capacity);
+}
+
 static inline unsigned PspStageTriAlpha(unsigned a) {
     return a >= 0x80u ? 255u : a * 2u;
 }
