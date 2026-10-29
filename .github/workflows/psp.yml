@@ -186,6 +186,11 @@ jobs:
           gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_native_variable_q.c -lm -o /tmp/bt3-psp-variable-q
           /tmp/bt3-psp-variable-q
 
+      - name: Test immutable GE vertex arena and batch lifetime
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_vertex_arena.c -o /tmp/tp3-vertex-arena
+          /tmp/tp3-vertex-arena
+
       - name: Test PSP shared GS texture scratch and GE-fence lifetime
         run: |
           gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_tex_lifetime.c -o /tmp/bt3-psp-tex-lifetime
