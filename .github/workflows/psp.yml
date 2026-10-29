@@ -196,6 +196,15 @@ jobs:
           gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/src/gs port/psp/test_gs_mirror_scissor.c -o /tmp/tp3-gs-scissor
           /tmp/tp3-gs-scissor
 
+      - name: Test native PSP GU mesh and animation binary formats
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_native_mesh_assets.c -lm -o /tmp/tp3-native-mesh
+          /tmp/tp3-native-mesh
+
+      - name: Test user-owned AFS archive extraction and bounds
+        run: |
+          python3 tools/test_psp_afs_extract.py
+
       - name: Test PSP preconverted GU 5551/8888 asset packs
         run: |
           gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_native_color_pack.c -o /tmp/tp3-native-color-pack
