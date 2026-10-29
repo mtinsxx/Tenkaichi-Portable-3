@@ -67,6 +67,23 @@ int main(void) {
             assert(eq(a[i].z,b[i].z));
         }
     }
+    {
+        /* Framebuffer snapshots are separate RAM textures from the
+           original GE color targets. Both must bypass fast UV packing. */
+        uint32_t ordinaryTex[4],geColor[4],fbSnapshot[4];
+        assert(PspStageTri_OrdinaryTexture(ordinaryTex,geColor,fbSnapshot));
+        assert(PspStageTri_OrdinaryTexture(NULL,geColor,fbSnapshot));
+        assert(!PspStageTri_OrdinaryTexture(geColor,geColor,fbSnapshot));
+        assert(!PspStageTri_OrdinaryTexture(fbSnapshot,geColor,fbSnapshot));
+
+        /* A new GE list invalidates cached PSP texture/blend/depth
+           state. The very first triangle after a fence must use the
+           normal draw path to rebind state. It must not reuse a batch. */
+        assert(PspStageTri_FastStateSafe(1,100,10,256));
+        assert(!PspStageTri_FastStateSafe(0,100,10,256));
+        assert(!PspStageTri_FastStateSafe(1,253,1,256));
+        assert(!PspStageTri_FastStateSafe(1,255,0,256));
+    }
     puts("PSP native stage GS triangle reuse: full per-vertex parity OK");
     return 0;
 }
