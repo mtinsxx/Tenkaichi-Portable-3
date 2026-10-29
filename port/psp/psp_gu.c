@@ -2734,6 +2734,19 @@ static void Psp_NativeEmitTriangle(PspStageFastBatch *b, int ctx,
                                    const GsVertex tri[3], int fighter) {
     psp_gu_mark_pass(fighter ? PSP_GU_PASS_FIGHTER : PSP_GU_PASS_STAGE);
     if (!fighter) Psp_DiagAllIncident(PSP_DIAG_STAGE_TRIANGLE,ctx,0);
+    /* GE command lists can be restarted by the vertex-arena fence.
+       The native fast path reuses the prior GE texture/depth/alpha state;
+       its FIRST triangle after a fence must go through the ordinary
+       GsGpu_Draw() state setup, not a stale cached PspStageTriScale.
+       Also avoid a fence occurring inside the cached fast path. */
+    if (b->active && sVbCount+3u>MAX_QUEUE) flush();
+    if (b->active && sVbCount && sVbMode!=GU_TRIANGLES) flush();
+    if (b->active &&
+        (!sAppliedValid ||
+         !PspGuVertexArena_Fits(sVbCursor,(unsigned)sVbCount,3u,
+                                sVbCapacity))) {
+        b->active=0;
+    }
     if (PspGsStripSkip_Next(&b->stableSkip)) {
         /* Same immutable GS registers throughout the native VU batch.
            Only previous statically rejected formats are memoized, NOT
@@ -2824,8 +2837,14 @@ static void Psp_NativeEmitTriangle(PspStageFastBatch *b, int ctx,
            Keep the normal path for such special GS effects. */
         if (sSt.tex) {
             for (i=0; i<MAX_TARGETS; ++i)
-                if (sTargets[i].used && sSt.tex == sTargets[i].color)
+                if (sTargets[i].used &&
+                    !PspStageTri_OrdinaryTexture(
+                         sSt.tex,sTargets[i].color,
+                         sTargets[i].snapshot))
                     alias=1;
+            /* The generic renderer applies the framebuffer snapshot's
+               logical TEX0 size plus GS-to-PSP scaling. Do not switch
+               to a generic fast batch while that texture is bound. */
             if (alias) return;
         }
         b->scale = PspStageTriMakeScale(gGs.prim, gGs.tex0[ctx],
