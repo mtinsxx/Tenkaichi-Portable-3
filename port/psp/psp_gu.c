@@ -3612,9 +3612,12 @@ void Psp_GuStats(unsigned out[4]) {
     Psp_Log("psp: native T8 palette-only refresh: reused=%u in-flight-blocked=%u (source hash unchanged, GE fenced)\n",
             sT8ClutRefreshed,sT8ClutRefreshBlocked);
     sT8ClutRefreshed=sT8ClutRefreshBlocked=0;
-    Psp_Log("psp: offline native T8 packs: loaded=%u not-found=%u rejected=%u (opt-in, GS page+CLUT hash checked)\n",
+    Psp_Log("psp: offline native T8 packs: loaded=%u not-found=%u rejected=%u (source GS page hash, data FNV and 64 GS samples)\n",
             sNativeT8PackLoaded,sNativeT8PackMissing,sNativeT8PackRejected);
     sNativeT8PackLoaded=sNativeT8PackMissing=sNativeT8PackRejected=0;
+    Psp_Log("psp: native PSMT8 converter: captured=%u failed=%u deferred=%u (opt-in record.txt; source page hash identity)\n",
+            sNativeT8Captured,sNativeT8CaptureFailed,sNativeT8CaptureDeferred);
+    sNativeT8CaptureFailed=sNativeT8CaptureDeferred=0;
     Psp_Log("psp: texture cache: entries=%d/%d vram=%u KB ram=%u KB peak=%u KB hits=%u misses=%u evicted=%u alloc-failed=%u oversized=%u\n",
             sTexCount, MAX_TEX, sTexMem / 1024u, sTexRamMem / 1024u,
             sTexRamPeak / 1024u, sTexCacheHits, sTexCacheMisses,
