@@ -15,7 +15,7 @@ typedef struct PspNativeColorHeader {
     uint32_t version,tbp,tbw,psm,gen,width,height;
     uint64_t texa;
     uint32_t whiteSprite,format,dataFnv;
-} PspNativeColorHeader;
+} __attribute__((packed)) PspNativeColorHeader;
 static inline uint32_t PspNativeColor_Fnv(const uint8_t *p,size_t n) {
     uint32_t h=2166136261u;
     size_t i;
