@@ -207,6 +207,7 @@ static unsigned sT8IndexHits, sT8IndexMisses, sT8IndexStored;
 static unsigned sT8IndexEvicted, sT8IndexOversize;
 static unsigned sT8ClutRefreshed, sT8ClutRefreshBlocked;
 static unsigned sNativeT8PackLoaded, sNativeT8PackMissing, sNativeT8PackRejected;
+static unsigned sNativeT8Captured, sNativeT8CaptureFailed, sNativeT8CaptureDeferred;
 static unsigned sFbReadLookupPreserved;
 static Tex sTex[MAX_TEX];
 static int sTexCount;
@@ -933,6 +934,59 @@ static int psp_native_t8_try_read(uint32_t tbp,uint32_t tbw,uint32_t gen,
     ++sNativeT8PackLoaded;
     return 1;
 }
+/* Optional first-run capture of original GS PSMT8 source bytes.
+ * The pack uses the SOURCE page hash, NOT the palette-dependent final
+ * texture hash. This lets palette changes reuse the same exact indices.
+ * No disk writes without a user-owned native/record.txt opt-in marker. */
+static void psp_native_t8_capture(uint32_t tbp,uint32_t tbw,uint32_t gen,
+                                  unsigned w,unsigned h,const uint8_t *indices) {
+    static int enabled=-1;
+    static unsigned lastFrame=UINT32_MAX;
+    char path[192],temporary[208];
+    FILE *fp;
+    PspNativeT8Header header;
+    size_t count;
+    int ok;
+    if(enabled<0) {
+        fp=fopen("ms0:/PSP/GAME/BT3/native/record.txt","rb");
+        enabled=fp!=NULL;
+        if(fp) {
+            fclose(fp);
+            Psp_Log("psp: optional native PSMT8 capture enabled (one pack per frame)\n");
+        }
+    }
+    if(!enabled || !indices || !w || !h || w>512u || h>512u ||
+       (size_t)w*h>65536u || sNativeT8Captured>=256u ||
+       lastFrame==sFrame) {
+        if(enabled) ++sNativeT8CaptureDeferred;
+        return;
+    }
+    snprintf(path,sizeof(path),
+             "ms0:/PSP/GAME/BT3/native/t8_%04x_%08x_%ux%u.tp8",
+             tbp,gen,w,h);
+    fp=fopen(path,"rb");
+    if(fp) {fclose(fp);return;}
+    snprintf(temporary,sizeof(temporary),"%s.tmp",path);
+    fp=fopen(temporary,"wb");
+    if(!fp) {++sNativeT8CaptureFailed;return;}
+    memset(&header,0,sizeof(header));
+    memcpy(header.magic,"T8P1",4);
+    header.version=1u;
+    header.tbp=tbp;header.tbw=tbw;header.gen=gen;
+    header.width=w;header.height=h;
+    count=(size_t)w*h;
+    header.dataFnv=PspNativeT8_Fnv(indices,count);
+    ok=fwrite(&header,1,sizeof(header),fp)==sizeof(header);
+    if(ok) ok=fwrite(indices,1,count,fp)==count;
+    if(fclose(fp)!=0) ok=0;
+    if(!ok || rename(temporary,path)!=0) {
+        ++sNativeT8CaptureFailed;
+        remove(temporary);
+        return;
+    }
+    lastFrame=sFrame;
+    ++sNativeT8Captured;
+}
 /* GS memory -> a PSP texture for the current TEX0. NULL when there is no room. */
 /* The stored bits of a rectangle of GS memory, as gs_core.c has them. The Vita has block-at-a-time versions of
    these two in a Vita-only part of that file (one address computation per block instead of per pixel); the PSP
@@ -1151,7 +1205,7 @@ static void *texture_get(int ctx, unsigned lodCap, int white_sprite,
             ++sT8IndexHits;
         } else {
             ++sT8IndexMisses;
-            if (!psp_native_t8_try_read(tbp,tbw,gen,readW,readH,idx) &&
+            if (!psp_native_t8_try_read(tbp,tbw,indexGen,readW,readH,idx) &&
                 !Gs_VramReadIdx8(tbp,tbw,psm,readW,readH,idx,readW)) {
                 tex_temp_free(idx);
                 return NULL;
@@ -1175,6 +1229,9 @@ static void *texture_get(int ctx, unsigned lodCap, int white_sprite,
                     ++sT8RefRebuilt;
                 }
             }
+            /* Persist ONLY after comparing against actual GS memory;
+               unreadable or stale packs already fall back to the source. */
+            psp_native_t8_capture(tbp,tbw,indexGen,readW,readH,idx);
             {
                 int slot=PspNativeT8Cache_Choose(sT8IndexSlots,
                          PSP_NATIVE_T8_CACHE_SLOTS,readW,readH,
