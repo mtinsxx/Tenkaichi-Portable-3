@@ -232,6 +232,7 @@ static PspStageClipCache sStage4ClipCache;
 static unsigned sNativeStageCachedClipTriangles;
 static unsigned sNativeStageClipTriangles, sNativeStageClipOutside, sNativeStageClipFailed;
 static unsigned sNativeStageBatches, sNativeStageVerts, sNativeStageFallback;
+static unsigned sNativeStageProjectionRejects;
 /* VU1 program6 had a no-op backend. GPU ground-shadow strips now
    use the exact screen/UV input layout and conservative clip guards. */
 static PspShadow6Vertex sShadow6Prepared[1024];
@@ -2574,6 +2575,16 @@ static int Psp_Stage4PrepareDirect(int ctx, const float *vertices,
                 Psp_DiagAllIncident(PSP_DIAG_STAGE_CLIP_DISABLED,ctx,i);
                 return 0;
             }
+            /* Clipped fans use consts+32 while normal strips use consts.
+               Preflight both homogeneous projections BEFORE writing any
+               GS state. The VU1 interpreter owns every rejected strip. */
+            if (!PspStage4_ProjectionCoherent(p,consts,clip->clip,
+                                               consts+32)) {
+                ++sNativeStageFallback;
+                ++sNativeStageProjectionRejects;
+                Psp_DiagAllIncident(PSP_DIAG_STAGE_INVALID_PROJECTION,ctx,i);
+                return 0;
+            }
         } else if (!PspStage4_TransformClipReady(o, p, p + 4, p + 8,
                                                    consts, clip->clip,
                                                    ox, oy)) {
@@ -3180,6 +3191,9 @@ void Psp_GuStats(unsigned out[4]) {
     Psp_Log("psp: stage native CPU clipping: triangles=%u wholly-outside=%u preflight-rejected=%u enabled=%d cached-fans=%u\n",
             sNativeStageClipTriangles, sNativeStageClipOutside, sNativeStageClipFailed,
             gPspNativeStageClip, sNativeStageCachedClipTriangles);
+    Psp_Log("psp: stage vertex projection guard: dual-matrix-rejected=%u (whole-strip VU1 fallback)\n",
+             sNativeStageProjectionRejects);
+    sNativeStageProjectionRejects=0;
     sNativeStageCachedClipTriangles = 0;
     sNativeStageClipTriangles = sNativeStageClipOutside = sNativeStageClipFailed = 0;
     Psp_Log("psp: GS framebuffer virtualization: saved=%u sampled-after-owner-change=%u allocation-failed=%u budget-skipped=%u active-snapshots=%u/%u recycled-stale=%u deferred=%u physical-rebind-invalidations=%u; GS alpha/indexed feedback still unavailable\n",

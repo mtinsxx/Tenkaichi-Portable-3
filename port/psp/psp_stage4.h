@@ -33,6 +33,45 @@ static inline void PspStage4_Multiply(float out[4], const float *cols,
     }
 }
 
+/* GS XYZ2 stores screen X/Y in unsigned 16-bit 12.4 fixed point.
+ * The native PSP path uses floats, and would otherwise rasterize a huge
+ * primitive instead of following the reference VU->GS wrapping rules.
+ * Reject coordinates that cannot fit one GS 12.4 register (including
+ * conservative negative-side overflow) and let VU1 interpret the strip. */
+static inline int PspStage4_GsCoordRepresentable(float c) {
+    return __builtin_isfinite(c) && c >= -4096.0f &&
+           c <= 4095.9375f;
+}
+
+/* The VU1 program4 normal-strip and clipped-fan paths use DIFFERENT
+ * matrices: screen*pos vs clip_to_screen*(clip*pos). Before accepting a
+ * native clipped strip, require both to project the original vertex
+ * within one GS screen pixel. Divergent camera matrices can otherwise
+ * join unrelated triangle corners into full-screen polygons.
+ * Comparing projected ratios, rather than raw W, allows equivalent
+ * homogeneous matrices with a different overall scale. */
+static inline int PspStage4_ProjectionCoherent(const float *pos,
+                     const float *screenMtx, const float clip[4],
+                     const float *clipToScreen) {
+    float direct[4], clipped[4], dx,dy, cx,cy;
+    unsigned i;
+    if (!pos || !screenMtx || !clip || !clipToScreen) return 0;
+    PspStage4_Multiply(direct,screenMtx,pos);
+    PspStage4_Multiply(clipped,clipToScreen,clip);
+    for(i=0;i<4u;i++)
+        if(!__builtin_isfinite(direct[i]) ||
+           !__builtin_isfinite(clipped[i])) return 0;
+    if(!(direct[3]>0.0001f) || !(clipped[3]>0.0001f))
+        return 0;
+    dx=direct[0]/direct[3]; dy=direct[1]/direct[3];
+    cx=clipped[0]/clipped[3]; cy=clipped[1]/clipped[3];
+    if(!PspStage4_GsCoordRepresentable(dx) ||
+       !PspStage4_GsCoordRepresentable(dy) ||
+       !PspStage4_GsCoordRepresentable(cx) ||
+       !PspStage4_GsCoordRepresentable(cy)) return 0;
+    return fabsf(dx-cx)<=1.0f && fabsf(dy-cy)<=1.0f;
+}
+
 static inline uint8_t PspStage4_Color(float c) {
     if (!(c > 0.0f)) return 0;
     if (c >= 255.0f) return 255;
@@ -70,6 +109,11 @@ static inline int PspStage4_TransformClipReady(PspStage4Vertex *out,
         if (!__builtin_isfinite(color[i])) return 0;
     if (!__builtin_isfinite(st[0]) || !__builtin_isfinite(st[1]))
         return 0;
+    /* Guard raw GS screen coordinates BEFORE XYOFFSET, not the PSP
+       viewport: clipped/offscreen triangles must remain eligible for the
+       reference interpreter rather than being silently discarded. */
+    if (!PspStage4_GsCoordRepresentable(screen[0]*q) ||
+        !PspStage4_GsCoordRepresentable(screen[1]*q)) return 0;
     out->x = screen[0] * q - xyoffX;
     out->y = screen[1] * q - xyoffY;
     out->z = (uint32_t)z;
