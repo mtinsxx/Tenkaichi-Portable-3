@@ -196,6 +196,12 @@ jobs:
           gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/src/gs port/psp/test_gs_mirror_scissor.c -o /tmp/tp3-gs-scissor
           /tmp/tp3-gs-scissor
 
+      - name: Test PSP preconverted GU 5551/8888 asset packs
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_native_color_pack.c -o /tmp/tp3-native-color-pack
+          /tmp/tp3-native-color-pack
+          python3 tools/test_psp_native_assets.py
+
       - name: Test exact GS VRAM framebuffer-to-indexed feedback mirror
         run: |
           gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/src/gs port/psp/test_gs_feedback_mirror.c -o /tmp/tp3-gs-exact-mirror
