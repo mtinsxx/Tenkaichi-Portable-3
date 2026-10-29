@@ -154,6 +154,11 @@ jobs:
           gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/src/gs port/psp/test_gs_mirror_scissor.c -o /tmp/tp3-gs-scissor
           /tmp/tp3-gs-scissor
 
+      - name: Test original BT3 fighter VU packet capture and native replay
+        run: |
+          gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_native_fighter_packet.c -o /tmp/tp3-fighter-packet
+          /tmp/tp3-fighter-packet
+
       - name: Test native PSP GU mesh and animation binary formats
         run: |
           gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_native_mesh_assets.c -lm -o /tmp/tp3-native-mesh
