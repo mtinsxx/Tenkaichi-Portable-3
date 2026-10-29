@@ -57,7 +57,7 @@ running and which have not.
 - The controller, with SELECT as a shift key for the four buttons the PSP has not (see [Controls](#controls)).
 - Sound: the PC port's sound code on the PSP's audio output.
 
-Not finished: the game's screen effects (glare, glow, blur and the depth tint are built by drawing one frame
+Still incomplete: the game's screen effects (glare, glow, blur and the depth tint are built by drawing one frame
 buffer into another, and the PSP's 2 MB of graphics memory has room for one pair of frame buffers), the movies,
 and the speed - the VU1 microprograms are interpreted instruction by instruction, which is slow.
 
@@ -178,13 +178,34 @@ In PPSSPP (headless, built from source; see
 - The text screen is drawn: with no disc files, the program puts on the screen, and into
   `ms0:/PSP/GAME/BT3/log.txt`, which file it is missing, and waits for START.
 
-### Not yet seen running
+### Gameplay reported by external testing — not yet verified on PSP hardware
 
-Everything past the disc check. The port has no game data of its own - the repository must not carry any, and
-the data tables are read from the player's disc - so no run has yet got further than "the game's program was
-not found". Until one does, the renderer, the sound, the menus, the fights and the speed are **untested**,
-and the list under [What works](#what-works) above is what the port is written to do, not what has been
-watched doing it.
+Player-supplied PPSSPP screenshots and videos (October 2026) show **real battles, fighter
+models, the HUD, terrain and animations**, rather than only a missing-disc screen. These
+are external test results, not reproducible automated gameplay validation: frame rates
+around **0–2 FPS**, distorted/oversized stage polygons, occasional black frames and
+incomplete GS composition remain. Some previous rainbow texture artifacts visibly
+improved after the experimental GS memory feedback mirror, but correctness and
+speed are **not** established by GitHub Actions compiling an EBOOT.
+
+### Native PSP conversion status (not yet complete)
+
+| Subsystem | What has actually been converted | What still runs as PS2 translation / emulation |
+| --- | --- | --- |
+| Game logic | Decompiled game C builds into PSP MIPS/Allegrex code | PS2-specific assumptions, resource formats and compatibility bridges |
+| Fighter geometry | Some native VU1 paths, vertex batching and skinning | Unsupported VU1 batches fall back to the instruction interpreter |
+| Stage geometry | Native paths for some VU1 strips, clipped fans and shadows | Program 399 interpreter fallbacks and unfinished GS primitive/target semantics |
+| Graphics | PSP GU drawing and texture cache, partial indexed CLUT support | GS register/texture translation and costly exact GS VRAM CPU mirror |
+| Assets | Runtime loading of the player's original disc archives | **No complete offline PSP mesh/texture/animation/effect conversion pipeline** |
+| UI/effects | Part of HUD, blending and font colors adapted | Incomplete framebuffer post-effects, screen composition and Z/alpha cases |
+| Performance | Small, individually tested optimizations | Native frame pipeline and sustained PSP-real-device benchmark still missing |
+
+Do not describe these partial changes as “all assets converted,” “the Tag Team
+engine,” or “30/60 FPS achieved.” See the existing
+[native renderer roadmap](docs/psp/native_renderer_roadmap.md). The source tree
+includes third-party/upstream files for attribution, decompilation, conversion
+references and tests. **Uncompiled is not the same as safe to delete.**
+
 
 ## Credits
 
