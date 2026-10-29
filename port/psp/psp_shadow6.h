@@ -40,6 +40,8 @@ static inline int PspShadow6_Transform(PspShadow6Vertex *out,
     if(!(screen[3]>0.0001f))return 0;
     q=1.0f/screen[3]; z=screen[2]*q;
     if(!__builtin_isfinite(z)||z<0.0f||z>16777215.0f)return 0;
+    if(!PspStage4_GsCoordRepresentable(screen[0]*q) ||
+       !PspStage4_GsCoordRepresentable(screen[1]*q))return 0;
     out->p.x=screen[0]*q-ox;
     out->p.y=screen[1]*q-oy;
     if(!__builtin_isfinite(out->p.x) || !__builtin_isfinite(out->p.y))
