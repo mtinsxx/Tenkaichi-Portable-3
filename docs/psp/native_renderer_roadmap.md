@@ -118,3 +118,55 @@ The PSP backend previously kept only two auxiliary physical 512x272 RGB5551 work
 ### Framebuffer coherency follow-up — 2026-10-27
 
 Audited snapshot read/write hazards. Fixed a genuine lifecycle error: logical PS2 FBPs previously retained `rendered=1` after their physical PSP drawbuffer changed because `gPspTargetFreshness` was disabled to avoid an earlier black-screen regression. Target rebinding now copies an existing drawable image (when permitted), invalidates the live alias, and keeps the snapshot for later feedback. A snapshot can be updated again within one frame **only before being referenced by the GPU**; after a same-frame read, it cannot be overwritten until the frame fence. Up-to-date snapshots are reused across frames, avoiding redundant 480x272 transfers. Removed the unsafe fallback that bound bare 512x272 PSP VRAM as a 512x256 texture; GPU targets must have a valid padded 512x512 snapshot or conservatively use the existing GS VRAM decoder. Tests now cover rebinding, nonredundant transfers, same-frame writes and GPU read pins. This improves target coherency but does **not** reconstruct lost GS 32-bit alpha, indexed-byte reinterpretation or Z-buffer-as-texture; their missing semantics can still cause absent battle scenes.
+
+## PSP-native conversion and repository cleanup gate — 2026-10-29
+
+**Scope correction:** The current executable is native PSP *game code*, but the
+graphics/data path is only partially converted. The GS reference renderer,
+VU1 interpreter fallback, on-demand framebuffer CPU replay, runtime texture
+decode, and many compatibility branches are still active. The latest GS
+scissor optimization does not convert characters, stages or textures in
+advance. Do not claim completion or Tag Team-level performance on CI alone.
+
+### Conversion order (no graphics-quality sacrifice)
+
+1. **Offline data pipeline:** parse legally obtained BT3 archive resources
+   without committing game assets; build repeatable converters for original
+   mesh layout, material/CLUT/textures, animation, particles, shadow and UI.
+   Validate counts, indices, palette bytes, UV and animation skin transforms
+   against the source data. Emit PSP-friendly assets plus a versioned manifest
+   and cache key; keep existing archive loader as a reference until verified.
+2. **True native runtime:** load preconverted resources directly; submit
+   meshes/skyboxes/sprites in durable PSP GU vertex buffers; preserve original
+   strip winding, clipping, depth, alpha, cel outlines and the original
+   gameplay input/animation. Replace proven VU1 program 399/4/6 workloads
+   gradually; never silently drop unsupported triangles.
+3. **GS feedback elimination:** replace repeated CPU replay of 4 MiB GS
+   framebuffers with native PSP render passes or precomputed effects, but
+   first prove cross-PSM PSMCT32/PSMT8 and HUD alpha outcomes are equivalent.
+   Preserve the current working feedback implementation as an A/B oracle.
+4. **Proof:** host structural/pixel tests, PSP SDK CI, same-fight PPSSPP
+   before/after video, stable hardware PSP performance counters, and
+   no black-frame/oversized-polygon regressions. 30 FPS is an initial goal,
+   not an achieved result; 60 FPS and Tag Team parity are unproven.
+
+### Cleanup: remove only after the new dependency graph is verified
+
+- **Generated outputs:** never version EBOOT.PBP, ELF/ISO, logs, cache,
+  expanded discs, object files. The root gitignore excludes these.
+- **Historical branches, source files and tests:** a branch or source path
+  being unused by today's PSP compiler is not proof it is useless. PC/Vita
+  sources contain format knowledge and attribution; tests guard color/font,
+  VU1, GS layout and regressions that previously broke. Do not bulk-delete
+  or rewrite them merely to reduce visible file count.
+- **Candidate removals after native cutover:** superseded runtime fallback
+  flags, duplicate texture decoders/CLUT conversions, all per-triangle
+  interpreter dispatch paths proven unused, debug-only logging built into
+  release, obsolete GS readback copies and broken prototype renderers.
+  Require an exact file/function caller audit plus a green PSP build and
+  identical visual test before deletion. Keep copyright/license notices.
+- **Repository truth:** existing README and this roadmap are the canonical
+  status documents. Avoid adding a new progress note for every tiny commit;
+  retain technical tests and replace outdated status statements instead.
+
+No runtime subsystem has been removed or newly converted by this audit.
