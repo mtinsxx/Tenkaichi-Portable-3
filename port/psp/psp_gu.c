@@ -61,6 +61,7 @@
 #include "psp_t8_native.h"
 #include "psp_native_t8_pack.h"
 #include "psp_native_color_pack.h"
+#include "psp_native_mesh_preview.h"
 #include "psp_native_t8_index_cache.h"
 #include "psp_t8_palette_refresh.h"
 #include "psp_native_gu_passes.h"
@@ -3161,6 +3162,10 @@ void GsGpu_FrameEnd(void) {
        The movie overlay and next presentation must not land in scratch VRAM. */
     sceGuDrawBufferList(GU_PSM_5551, (void *)(uintptr_t)sMainDrawOffset, BUF_W);
     movie_draw_frame();
+    /* Optional explicit M3P1/A3P1 native GU diagnostic. Never enabled
+       unless the user installs enable-preview.txt and preview.m3p.
+       Run last: real game output/state remains unchanged normally. */
+    PspNativePreview_Draw(sFrame);
     t0 = Psp_TimeUs();
     sceGuFinish();
     sceGuSync(0, 0);
@@ -3357,6 +3362,7 @@ int Psp_GuInit(void) {
             sScratchIndices ? PSP_TEX_SCRATCH_INDEX_BYTES/1024u : 0u,
             sScratchReservedBytes/1024u, sTexRamBudget/1024u,
             gPspTextureScratch);
+    PspNativePreview_Init();
     sceGuInit();
     sceGuStart(GU_DIRECT, sList);
     /*
