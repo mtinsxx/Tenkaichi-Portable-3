@@ -130,7 +130,9 @@ with tempfile.TemporaryDirectory() as tmp:
     payload=struct.pack("<48f",*vertices)
     raw=root/"fighter.vu"
     raw.write_bytes(payload)
-    pack=conv.write_fighter_vu(Namespace(source=str(raw),output=None))
+    pack=conv.write_fighter_vu(Namespace(
+        source=str(raw),
+        output=root/f"fighter_{conv.fnv(payload):08x}_4.f3p"))
     header=pack.read_bytes()[:24]
     assert struct.unpack("<4s5I",header)==(
         b"F3P1",1,4,48,conv.fnv(payload),conv.fnv(payload))
