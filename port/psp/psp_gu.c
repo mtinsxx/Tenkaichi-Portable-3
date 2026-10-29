@@ -2742,9 +2742,8 @@ static void Psp_NativeEmitTriangle(PspStageFastBatch *b, int ctx,
     if (b->active && sVbCount+3u>MAX_QUEUE) flush();
     if (b->active && sVbCount && sVbMode!=GU_TRIANGLES) flush();
     if (b->active &&
-        (!sAppliedValid ||
-         !PspGuVertexArena_Fits(sVbCursor,(unsigned)sVbCount,3u,
-                                sVbCapacity))) {
+        !PspStageTri_FastStateSafe(sAppliedValid,sVbCursor,
+                                   (unsigned)sVbCount,sVbCapacity)) {
         b->active=0;
     }
     if (PspGsStripSkip_Next(&b->stableSkip)) {
