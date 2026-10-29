@@ -207,6 +207,7 @@ static unsigned sT8IndexHits, sT8IndexMisses, sT8IndexStored;
 static unsigned sT8IndexEvicted, sT8IndexOversize;
 static unsigned sT8ClutRefreshed, sT8ClutRefreshBlocked;
 static unsigned sNativeT8PackLoaded, sNativeT8PackMissing, sNativeT8PackRejected;
+static unsigned sNativeT8PackCreated, sNativeT8PackCreateFailed;
 static unsigned sFbReadLookupPreserved;
 static Tex sTex[MAX_TEX];
 static int sTexCount;
@@ -933,6 +934,58 @@ static int psp_native_t8_try_read(uint32_t tbp,uint32_t tbw,uint32_t gen,
     ++sNativeT8PackLoaded;
     return 1;
 }
+/* Optional local resource PREPARATION from the user's own active GS
+ * texture source. Enable by creating native/create.txt AND native/enable.txt
+ * next to the user's game. This writes up to eight verified T8P1 packs
+ * per process run, for reuse by the already-existing read path during
+ * subsequent launches. Never uploads a raw game asset to the repository.
+ * With no marker, there is ZERO per-miss storage write overhead.
+ *
+ * The payload is linear 8-bit GS index texels only; the CLUT is always
+ * read LIVE from GS memory, so palette animation and alpha remain exact.
+ * The reader additionally samples GS VRAM on every pack load. */
+static void psp_native_t8_try_create(uint32_t tbp,uint32_t tbw,uint32_t gen,
+                     unsigned w,unsigned h,const uint8_t *idx) {
+    static int createEnabled=-1;
+    char path[192];
+    FILE *fp;
+    PspNativeT8Header h0;
+    size_t n;
+    if(createEnabled<0) {
+        fp=fopen("ms0:/PSP/GAME/BT3/native/create.txt","rb");
+        createEnabled=fp!=NULL;
+        if(fp)fclose(fp);
+        if(createEnabled)
+            Psp_Log("psp: optional native PSMT8 pack preconversion enabled (max 8 packs per run)\n");
+    }
+    if(!createEnabled || !idx || sNativeT8PackCreated>=8u ||
+       !w || !h || w>512u || h>512u || tbp>16383u || tbw>63u)
+        return;
+    snprintf(path,sizeof(path),
+             "ms0:/PSP/GAME/BT3/native/t8_%04x_%08x_%ux%u.tp8",
+             tbp,gen,w,h);
+    /* An existing pack may be valid or intentionally supplied offline.
+       NEVER overwrite it or replace a mismatched fingerprint. */
+    fp=fopen(path,"rb");
+    if(fp) {fclose(fp);return;}
+    n=(size_t)w*h;
+    memcpy(h0.magic,"T8P1",4);
+    h0.version=1u;
+    h0.tbp=tbp;h0.tbw=tbw;h0.gen=gen;
+    h0.width=w;h0.height=h;
+    h0.dataFnv=PspNativeT8_Fnv(idx,n);
+    fp=fopen(path,"wb");
+    if(!fp){++sNativeT8PackCreateFailed;return;}
+    if(fwrite(&h0,1,sizeof(h0),fp)!=sizeof(h0) ||
+       fwrite(idx,1,n,fp)!=n || fflush(fp)!=0) {
+        ++sNativeT8PackCreateFailed;
+        fclose(fp);
+        remove(path); /* never leave a corrupt/incomplete cache pack */
+        return;
+    }
+    if(fclose(fp)!=0) {++sNativeT8PackCreateFailed;remove(path);return;}
+    ++sNativeT8PackCreated;
+}
 /* GS memory -> a PSP texture for the current TEX0. NULL when there is no room. */
 /* The stored bits of a rectangle of GS memory, as gs_core.c has them. The Vita has block-at-a-time versions of
    these two in a Vita-only part of that file (one address computation per block instead of per pixel); the PSP
@@ -1175,6 +1228,10 @@ static void *texture_get(int ctx, unsigned lodCap, int white_sprite,
                     ++sT8RefRebuilt;
                 }
             }
+            /* Snapshot the validated GS source for later PSP launches.
+               Must happen BEFORE LOD subsampling/swizzling and ONLY in
+               explicit local preconversion mode. */
+            psp_native_t8_try_create(tbp,tbw,indexGen,readW,readH,idx);
             {
                 int slot=PspNativeT8Cache_Choose(sT8IndexSlots,
                          PSP_NATIVE_T8_CACHE_SLOTS,readW,readH,
@@ -3557,6 +3614,9 @@ void Psp_GuStats(unsigned out[4]) {
     sT8ClutRefreshed=sT8ClutRefreshBlocked=0;
     Psp_Log("psp: offline native T8 packs: loaded=%u not-found=%u rejected=%u (opt-in, GS page+CLUT hash checked)\n",
             sNativeT8PackLoaded,sNativeT8PackMissing,sNativeT8PackRejected);
+    Psp_Log("psp: native PSMT8 preconverted pack writer: created=%u failed=%u (opt-in create.txt; cap 8 packs)\n",
+             sNativeT8PackCreated,sNativeT8PackCreateFailed);
+    sNativeT8PackCreateFailed=0;
     sNativeT8PackLoaded=sNativeT8PackMissing=sNativeT8PackRejected=0;
     Psp_Log("psp: texture cache: entries=%d/%d vram=%u KB ram=%u KB peak=%u KB hits=%u misses=%u evicted=%u alloc-failed=%u oversized=%u\n",
             sTexCount, MAX_TEX, sTexMem / 1024u, sTexRamMem / 1024u,
