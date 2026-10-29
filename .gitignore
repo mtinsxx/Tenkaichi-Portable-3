@@ -35,3 +35,8 @@ port/build_release/
 *.pbp
 *.elf
 *.log
+# User-derived PSP native texture data (never commit game assets)
+*.tp8
+*.idx8
+/native/
+/port/tools/native_capture/
