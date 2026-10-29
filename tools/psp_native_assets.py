@@ -112,6 +112,39 @@ def write_rgba5551(args):
     return out
 
 
+def write_fighter_vu(args):
+    """Pack a REAL original-game VU1 3-quadword fighter vertex stream.
+
+    The packet is captured from active BT3 VU program 0/1, not guessed
+    from unparsed AFS files. It preserves positions, normals, UVs and
+    two-bone weights bit-for-bit. The PSP uses LIVE animation matrices
+    and current GS TEX0/material when drawing the saved packet.
+    """
+    src = Path(args.source).read_bytes()
+    stride = 48
+    if len(src) % stride:
+        raise ValueError("fighter VU packet must contain exactly 3 quadwords per vertex")
+    count = len(src) // stride
+    if not 3 <= count <= 38:
+        raise ValueError("fighter VU packet requires 3..38 vertices")
+    for i in range(count):
+        vertex = struct.unpack_from("<12f", src, i*stride)
+        if (not all(math.isfinite(vertex[j]) for j in
+                    (0,1,2,3,4,5,6,8,9)) or
+            not (0.0 <= vertex[3] <= 1.0)):
+            raise ValueError(f"invalid position, weight, normal or UV at vertex {i}")
+    signature = fnv(src)
+    out = Path(args.output) if args.output else Path(
+        f"fighter_{signature:08x}_{count}.f3p")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    # Header: F3P1 / version / count / stride / original packet FNV /
+    # payload FNV. The PSP compares the ENTIRE payload against the
+    # live VU buffer before using a file, not only this identifier.
+    out.write_bytes(struct.pack("<4s5I", b"F3P1", 1, count, stride,
+                                signature, signature) + src)
+    return out
+
+
 def write_mesh(args):
     """Prepack scene meshes into fixed endian geometry with full floats.
 
@@ -191,7 +224,7 @@ def write_bundle(args):
     generated = []
     for item in entries["assets"]:
         if not isinstance(item, dict) or item.get("type") not in (
-                "color", "t8", "mesh", "animation"):
+                "color", "t8", "mesh", "animation", "fighter-vu"):
             raise ValueError("unsupported asset type")
         kind = item["type"]
         relative = Path(item["source"])
@@ -206,6 +239,11 @@ def write_bundle(args):
         elif kind == "t8":
             stem = (f"t8_{item['tbp']:04x}_{item['gen']:08x}_"
                     f"{item['width']}x{item['height']}.tp8")
+        elif kind == "fighter-vu":
+            payload = source.read_bytes()
+            if len(payload) % 48 or not (3 <= len(payload)//48 <= 38):
+                raise ValueError("fighter-vu source must contain 3..38 live VU vertices")
+            stem = f"fighter_{fnv(payload):08x}_{len(payload)//48}.f3p"
         else:
             stem = item.get("output")
             if not stem:
@@ -224,7 +262,8 @@ def write_bundle(args):
         options.update(source=str(source),output=str(destination))
         ns = argparse.Namespace(**options)
         converters = {"t8":write_t8,"color":write_color,
-                      "mesh":write_mesh,"animation":write_animation}
+                      "mesh":write_mesh,"animation":write_animation,
+                      "fighter-vu":write_fighter_vu}
         out = converters[kind](ns)
         generated.append({"type":kind,"file":relative_out.as_posix(),
                           "bytes":out.stat().st_size,
@@ -237,7 +276,7 @@ def write_bundle(args):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("type", choices=("t8", "rgba5551", "color", "mesh", "animation", "bundle"))
+    p.add_argument("type", choices=("t8", "rgba5551", "color", "mesh", "animation", "fighter-vu", "bundle"))
     p.add_argument("--source", help="user's own extracted raw/JSON input")
     p.add_argument("--manifest", help="JSON list of already extracted assets")
     p.add_argument("--output")
@@ -263,10 +302,11 @@ def main():
     if args.type == "color" and (args.tbp is None or args.tbw is None or
                                  args.gen is None or args.psm is None):
         p.error("color requires --tbp, --tbw, --gen and --psm")
-    if args.type not in ("t8", "color") and not args.output:
+    if args.type not in ("t8", "color", "fighter-vu") and not args.output:
         p.error("--output is required for non-T8 conversions")
     fn = {"t8": write_t8, "color": write_color, "rgba5551": write_rgba5551,
-          "mesh": write_mesh, "animation": write_animation}[args.type]
+          "mesh": write_mesh, "animation": write_animation,
+          "fighter-vu": write_fighter_vu}[args.type]
     print("Wrote:", fn(args))
 
 
