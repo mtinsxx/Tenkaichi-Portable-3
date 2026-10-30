@@ -196,6 +196,11 @@ jobs:
           gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/src/gs port/psp/test_gs_mirror_scissor.c -o /tmp/tp3-gs-scissor
           /tmp/tp3-gs-scissor
 
+      - name: Test automatic in-memory BT3 fighter model prewarm without user asset packs
+        run: |
+          gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/psp port/psp/test_auto_model_prepare.c -lm -o /tmp/tp3-auto-model
+          /tmp/tp3-auto-model
+
       - name: Test real original BT3 ObjMdlMesh VIF offline fighter asset conversion
         run: |
           python3 tools/test_psp_bt3_mesh.py
