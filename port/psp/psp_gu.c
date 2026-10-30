@@ -3798,6 +3798,8 @@ void Psp_GuStats(unsigned out[4]) {
     Psp_Log("psp: GS CPU mirror optimization: early-off-triangle=%u skipped-frame-reads=%u no-op-draws=%u invalid/offscreen-bounds=%u (cumulative; full GS interpolation/alpha/depth retained)\n",
             Gs_PspMirrorEarlyRejected(),Gs_PspMirrorDestReadSaved(),
             Gs_PspMirrorNoopDraws(),Gs_PspMirrorBadBounds());
+    Psp_Log("psp: GS exact mirror CPU measured elapsed=%u ms/interval (full duration of pixel raster; no sampled extrapolation)\n",
+            Gs_PspMirrorTakeCpuMs());
     Psp_Log("psp: exact GS VRAM feedback mirror: tracked-fbps=%u CPU-rasterized-draws=%u dirty-8KB-pages=%u (PSMCT32 <-> PSMT8 share original 4MB GS bytes)\n",
             Gs_PspMirrorTrackedCount(),Gs_PspMirrorDrawCount(),
             Gs_PspMirrorDirtyPageCount());
