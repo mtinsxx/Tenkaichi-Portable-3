@@ -49,6 +49,21 @@ static inline int PspGsFb_BackingChanged(uintptr_t oldBacking,
                                          uintptr_t newBacking) {
     return oldBacking != newBacking;
 }
+/* PSP GU drawbuffer can rotate independently of the logical PS2 FBP.
+ * A copy preserved into a 512x512-padded GE-readable RAM snapshot MUST
+ * be restored before a partially overwritten logical screen is drawn
+ * on its new physical backing. WORK is excluded because its physical
+ * owner must be retired first and its layout may differ. 5551 staging
+ * never substitutes for the byte-exact PS2 framebuffer memory. */
+static inline int PspGsFb_ShouldRestoreScreen(const PspGsFbVersion *v,
+                                               uint32_t gen,
+                                               uintptr_t previous,
+                                               uintptr_t next,
+                                               int isScreen) {
+    return isScreen && previous != next &&
+           v && v->valid && v->saved == v->written &&
+           v->sourceGen == gen;
+}
 static inline void PspGsFb_Saved(PspGsFbVersion *v,
                  unsigned frame,uint32_t generation) {
     if(!v)return;

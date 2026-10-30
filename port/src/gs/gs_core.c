@@ -33,6 +33,7 @@
 #include "gs_raster_bounds.h"
 #include "gs_mirror_fast.h"
 #include "gs_mirror_row_span.h"
+#include "gs_mirror_scanline.h"
 #endif
 
 #define SURF_W 1024
@@ -96,13 +97,16 @@ unsigned Gs_PspMirrorBoundsCulled(void) {return sGsMirrorBoundsCulled;}
 static unsigned sGsMirrorEarlyRejected,sGsMirrorNoopDraws,sGsMirrorBadBounds;
 static unsigned sGsMirrorDestReadSaved;
 static unsigned sGsMirrorSourceBlendAvoided;
-static unsigned long long sGsMirrorRowSpanSkipped;
+static unsigned long long sGsMirrorRowSpanSkipped,sGsMirrorScanlineOmitted;
+static unsigned sGsMirrorScanlineRowsEmpty;
 unsigned Gs_PspMirrorEarlyRejected(void) {return sGsMirrorEarlyRejected;}
 unsigned Gs_PspMirrorNoopDraws(void) {return sGsMirrorNoopDraws;}
 unsigned Gs_PspMirrorBadBounds(void) {return sGsMirrorBadBounds;}
 unsigned Gs_PspMirrorDestReadSaved(void) {return sGsMirrorDestReadSaved;}
 unsigned Gs_PspMirrorSourceBlendAvoided(void) {return sGsMirrorSourceBlendAvoided;}
 unsigned Gs_PspMirrorRowSpanSkippedK(void) {return (unsigned)(sGsMirrorRowSpanSkipped/1000u);}
+unsigned Gs_PspMirrorScanlineSkippedK(void) {return (unsigned)(sGsMirrorScanlineOmitted/1000u);}
+unsigned Gs_PspMirrorScanlineRowsEmpty(void) {return sGsMirrorScanlineRowsEmpty;}
 unsigned Gs_PspMirrorCandidatesAvoidedK(void) {
     return (unsigned)(sGsMirrorCandidatesAvoided/1000u);
 }
@@ -1287,7 +1291,25 @@ static void draw_triangle(Target *sf, int ctx, const Vertex *a, const Vertex *b,
     }
 #endif
     for (y = (int)miny; y <= (int)maxy; y++) {
-        for (x = (int)minx; x <= (int)maxx; x++) {
+        int rowFirst=(int)minx,rowLast=(int)maxx;
+#ifdef PORT_PSP
+        if (sGsMirrorActive && rowFirst<=rowLast) {
+            /* Exact virtual GS FB scanline: analytically constrain the
+             * horizontal range conservatively before invoking expensive
+             * 32-bit depth/alpha/PSM raster. Original pixel order, test
+             * equations, swizzled VRAM and feedback are unchanged. */
+            unsigned rowWidth=(unsigned)(rowLast-rowFirst+1);
+            if (!GsMirror_ClipScanline(a->x,a->y,b->x,b->y,
+                                       c->x,c->y,area,y,&rowFirst,&rowLast)) {
+                ++sGsMirrorScanlineRowsEmpty;
+                sGsMirrorScanlineOmitted+=rowWidth;
+                continue;
+            }
+            sGsMirrorScanlineOmitted+=
+                rowWidth-(unsigned)(rowLast-rowFirst+1);
+        }
+#endif
+        for (x = rowFirst; x <= rowLast; x++) {
 #ifdef PORT_PSP
             if (sGsMirrorActive && ((x - (int)minx) & 15) == 0) {
                 int end=x+15;

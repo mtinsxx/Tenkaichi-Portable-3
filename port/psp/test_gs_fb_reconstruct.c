@@ -47,6 +47,16 @@ int main(void) {
     assert(!PspGsFb_SampleValid(&v,5u));
     assert(!PspGsFb_BackingChanged(0x44000000u,0x44000000u));
     assert(PspGsFb_BackingChanged(0x44000000u,0x44044000u));
+    /* Rebinding an existing PS2 screen must restore the valid saved
+       pixels before partial draws; never restore stale or WORK data. */
+    PspGsFb_OnDraw(&v);
+    PspGsFb_Saved(&v,3u,7u);
+    assert(PspGsFb_ShouldRestoreScreen(&v,7u,0x44000000u,0x44044000u,1));
+    assert(!PspGsFb_ShouldRestoreScreen(&v,8u,0x44000000u,0x44044000u,1));
+    assert(!PspGsFb_ShouldRestoreScreen(&v,7u,0x44000000u,0x44000000u,1));
+    assert(!PspGsFb_ShouldRestoreScreen(&v,7u,0x44000000u,0x44044000u,0));
+    PspGsFb_OnDraw(&v);
+    assert(!PspGsFb_ShouldRestoreScreen(&v,7u,0x44000000u,0x44044000u,1));
     puts("PSP virtual GS FB write-version, save lifetime, source gen and UV parity passed");
     return 0;
 }

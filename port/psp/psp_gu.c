@@ -363,6 +363,7 @@ static unsigned sTargetsRegistered;
 static uint32_t sWorkOwnerFbp[PSP_WORK_SURFACES] = {UINT32_MAX,UINT32_MAX};
 static unsigned sWorkPairSamples, sWorkPairOwnerMisses;
 static unsigned sFbSnapshotsSaved, sFbSnapshotsSampled;
+static unsigned sFbScreenRebindRestores, sFbScreenRebindMissed;
 static unsigned sFbSnapshotsAllocFail, sFbSnapshotsDeferred;
 static unsigned sFbSnapshotAllocs, sFbSnapshotBudgetSkip;
 static unsigned sFbSnapshotRecycled;
@@ -794,22 +795,48 @@ static int target_get(uint32_t fbp, int create) {
                 return i;
             }
             void *nextBacking = target_color(fbp);
+            int restoreScreen=0;
             if (sTargets[i].rendered &&
                 PspGsFb_BackingChanged((uintptr_t)sTargets[i].color,
                                         (uintptr_t)nextBacking)) {
-                /* Before reusing a logical FBP with a DIFFERENT physical
-                   PSP backing, preserve the old completed GE image.
-                   The previous code left rendered=1 by default because
-                   target_freshness was disabled, silently treating a
-                   newly selected drawbuffer as already initialized. */
-                if(!PspGsFb_SampleValid(&sTargets[i].snapVersion,
-                                          sTargets[i].gen))
+                /* A partial GS frame may require the previous logical
+                   screen contents even when GU swaps physical buffers.
+                   Preserve the actual GE-produced 5551 picture before
+                   changing its owner; never reconstruct PS2 32-bit GS
+                   bytes from the PSP's reduced-colour pixels. */
+                if (sTargets[i].gen == gGsPageGen[fbp & 511u] &&
+                    !PspGsFb_SampleValid(&sTargets[i].snapVersion,
+                                         sTargets[i].gen))
                     snapshot_target(i);
+                restoreScreen =
+                    sTargets[i].snapshot != NULL &&
+                    sTargets[i].gen == gGsPageGen[fbp & 511u] &&
+                    PspGsFb_ShouldRestoreScreen(
+                        &sTargets[i].snapVersion,sTargets[i].gen,
+                        (uintptr_t)sTargets[i].color,
+                        (uintptr_t)nextBacking,!psp_is_work(nextBacking));
+                if (!restoreScreen && !psp_is_work(nextBacking))
+                    ++sFbScreenRebindMissed;
                 sTargets[i].rendered=0;
                 ++sTargetRebindInvalid;
             }
             sTargets[i].last = sFrame;
             sTargets[i].color = nextBacking;
+            if (restoreScreen) {
+                /* Ordered GPU-to-RAM snapshot above -> RAM-to-GU
+                   restore here -> next partial GS draw. No CPU
+                   readback, no extra framebuffer allocations, and no
+                   wait for the GE. WORK owner transitions remain in the
+                   existing separate handling path below. */
+                flush();
+                sceGuCopyImage(GU_PSM_5551,0,0,SCR_W,SCR_H,BUF_W,
+                               sTargets[i].snapshot,0,0,BUF_W,
+                               (void *)PspVram_GePointer(nextBacking));
+                sceGuTexFlush();
+                sTargets[i].snapshotSampledFrame=sFrame;
+                sTargets[i].rendered=1;
+                ++sFbScreenRebindRestores;
+            }
             return i;
         }
     }
@@ -3498,6 +3525,9 @@ void Psp_GuStats(unsigned out[4]) {
             sFbSnapshotRecycled,sFbSnapshotsDeferred,sTargetRebindInvalid);
     sFbSnapshotsSaved=sFbSnapshotsSampled=sFbSnapshotsAllocFail=
         sFbSnapshotBudgetSkip=sFbSnapshotsDeferred=sFbSnapshotRecycled=0;
+    Psp_Log("psp: GS screen framebuffer rebind: restored=%u missing-safe-snapshot=%u (GE-ordered 5551 retention; never PS2 32-bit alias)\n",
+            sFbScreenRebindRestores,sFbScreenRebindMissed);
+    sFbScreenRebindRestores=sFbScreenRebindMissed=0;
     Psp_Log("psp: architecture gaps: unimplemented-fb-readbacks=%u native-effects=%u (no pixels copied for FB readback)\n",
             sDiagUnimplementedFbUpload, sDiagUnimplementedNativeEffect);
     sDiagUnimplementedFbUpload = sDiagUnimplementedNativeEffect = 0;
@@ -3733,6 +3763,8 @@ void Psp_GuStats(unsigned out[4]) {
             Gs_PspMirrorBoundsCulled(),Gs_PspMirrorCandidatesAvoidedK());
     Psp_Log("psp: GS CPU mirror row spans: omitted-k-pixels=%u source-equivalent-blends=%u (cumulative, exact framebuffer semantics)\n",
             Gs_PspMirrorRowSpanSkippedK(),Gs_PspMirrorSourceBlendAvoided());
+    Psp_Log("psp: GS CPU mirror scanline: omitted-k-pixels=%u empty-rows=%u (cumulative; exact source barycentrics retained)\n",
+            Gs_PspMirrorScanlineSkippedK(),Gs_PspMirrorScanlineRowsEmpty());
     Psp_Log("psp: GS CPU mirror optimization: early-off-triangle=%u skipped-frame-reads=%u no-op-draws=%u invalid/offscreen-bounds=%u (cumulative; full GS interpolation/alpha/depth retained)\n",
             Gs_PspMirrorEarlyRejected(),Gs_PspMirrorDestReadSaved(),
             Gs_PspMirrorNoopDraws(),Gs_PspMirrorBadBounds());
