@@ -55,6 +55,8 @@ unsigned Gs_PspMirrorNoopDraws(void);
 unsigned Gs_PspMirrorBadBounds(void);
 unsigned Gs_PspMirrorDestReadSaved(void);
 unsigned Gs_PspMirrorRowSpanSkippedK(void);
+unsigned Gs_PspMirrorScanlineSkippedK(void);
+unsigned Gs_PspMirrorScanlineRowsEmpty(void);
 unsigned Gs_PspMirrorSourceBlendAvoided(void);
 #endif
 extern unsigned gGsFrame;
