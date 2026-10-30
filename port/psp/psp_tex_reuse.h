@@ -2,7 +2,10 @@
 #define BT3_PSP_TEX_REUSE_H
 #include <stdint.h>
 /* More direct-mapped hot keys; full-key+epoch+serial guards are unchanged. */
-#define PSP_TEX_REUSE_SLOTS 128u
+/* 128 two-way sets, 256 descriptors. Each slot is ~96 B in main RAM:
+ * insignificant beside texture allocations but prevents alternating TEX0
+ * keys mapping to the same single hot-cache descriptor in menus. */
+#define PSP_TEX_REUSE_SLOTS 256u
 #define PSP_TEX_REUSE_PAGE_LIMIT 16u
 typedef struct PspTexReuse {
     uint64_t tex0, texa;
@@ -18,7 +21,7 @@ static inline unsigned Psp_TexReuseSlot(uint64_t tex0, uint64_t texa,
                  (uint32_t)texa ^ (uint32_t)(texa >> 32) ^
                  (lodCap * 0x9e3779b1u) ^ (unsigned)whiteSprite;
     h ^= h >> 16;
-    return (unsigned)(h & (PSP_TEX_REUSE_SLOTS - 1u));
+    return (unsigned)((h & ((PSP_TEX_REUSE_SLOTS / 2u) - 1u)) * 2u);
 }
 static inline int Psp_TexReuseMatches(const PspTexReuse *e,
                                       uint64_t tex0, uint64_t texa,
@@ -41,6 +44,28 @@ static inline int Psp_TexReuseKeyStable(const PspTexReuse *e,
     return e->valid && e->tex0 == tex0 && e->texa == texa &&
            e->serial == serial && e->lodCap == lodCap &&
            e->whiteSprite == whiteSprite && e->index < count;
+}
+/* Both ways have the SAME hash set; never probe another set.
+ * Prefer a matching full key even when epoch changed: the full-key
+ * generation path still validates the source pages/CLUT. On a miss,
+ * reuse an invalid/stale descriptor before evicting either valid way.
+ * LRU eviction/compaction repairs all descriptor indices separately. */
+static inline unsigned Psp_TexReuseChooseWay(const PspTexReuse *entries,
+                                      unsigned base,
+                                      uint64_t tex0,uint64_t texa,
+                                      uint32_t serial,
+                                      unsigned lodCap,int whiteSprite,
+                                      unsigned count,unsigned replacement) {
+    unsigned other=base+1u;
+    if(Psp_TexReuseKeyStable(&entries[base],tex0,texa,serial,
+                             lodCap,whiteSprite,count)) return base;
+    if(Psp_TexReuseKeyStable(&entries[other],tex0,texa,serial,
+                             lodCap,whiteSprite,count)) return other;
+    if(!entries[base].valid || entries[base].serial!=serial ||
+       entries[base].index>=count) return base;
+    if(!entries[other].valid || entries[other].serial!=serial ||
+       entries[other].index>=count) return other;
+    return base+(replacement&1u);
 }
 static inline void Psp_TexReuseRememberPages(PspTexReuse *e,
                                                const uint32_t *generations,
