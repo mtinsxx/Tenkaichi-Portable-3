@@ -23,6 +23,19 @@ static inline int GsMirror_IsNoop(uint64_t frame,uint64_t zbuf) {
 /* Never convert huge/non-finite raster bounds to int on Allegrex.
  * Offscreen primitives have empty GS scissor intersection; preserve
  * all potentially visible pixels by returning 1 in that case only. */
+/* Exact PS2 GS ALPHA: ((A - B) * C >> 7) + D.
+ * When A==B and D==SRC, the output is SRC independent of C;
+ * when C is fixed zero and D==SRC, it is also SRC. The original
+ * per-channel clamp cannot change any 8-bit source component.
+ * Never replace blends that depend on destination or SRC alpha. */
+static inline int GsMirror_BlendEqualsSource(uint64_t alpha) {
+    unsigned a=(unsigned)(alpha&3u);
+    unsigned b=(unsigned)((alpha>>2)&3u);
+    unsigned c=(unsigned)((alpha>>4)&3u);
+    unsigned d=(unsigned)((alpha>>6)&3u);
+    return d==0u && (a==b || (c==2u && ((alpha>>32)&255u)==0u));
+}
+
 static inline int GsMirror_BoundsMayOverlap(float minx,float maxx,
                                            float miny,float maxy,
                                            int width,int height) {
