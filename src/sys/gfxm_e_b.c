@@ -4,6 +4,10 @@
 #include "sys/gfx.h"
 #include "sys/heap.h"
 #include "sys/gfxm_e.h"
+#ifdef PORT_PSP
+#include "battle/btl_obj.h"
+extern void PspNativeFighterPacket_AutoPrepare(const void *,unsigned);
+#endif
 
 /*
  * Battle object model binding and ground shadow, 0x1131D8..0x114860. See include/sys/gfxm_e.h.
@@ -169,6 +173,19 @@ void BtlObjMdl_BindFiles(ObjMdlObj *obj) {
     s32 i;
 
     mdl->model = mdl->file;
+#ifdef PORT_PSP
+    /* Original BT3 model/animation files already came from the user's
+       disc via BtlRes_LoadFile. Decode supported native geometry here,
+       once at resource bind, instead of asking an Android user to find
+       AFS indices and install custom .f3p packs. No save I/O or edits
+       to the model; unsupported streams use existing VU1 behavior. */
+    if (res && mdl->file) {
+        const BtlResSlot *slot = (const BtlResSlot *)res;
+        if(slot->file[0].buf==mdl->file && slot->file[0].size>0)
+            PspNativeFighterPacket_AutoPrepare(
+                mdl->file,(unsigned)slot->file[0].size);
+    }
+#endif
     mdl->meshes = (ObjMdlMesh *)((u8 *)mdl->file + mdl->file->meshOfs);
     if (!mdl->file->bound) {
         mdl->file->tbp = 0x3480;
