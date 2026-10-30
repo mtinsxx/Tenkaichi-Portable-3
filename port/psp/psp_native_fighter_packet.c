@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "psp_native_fighter_packet.h"
+#include "psp_fighter_pack_miss_cache.h"
 
 extern void Psp_Log(const char *, ...);
 
@@ -14,7 +15,7 @@ extern void Psp_Log(const char *, ...);
  *
  * Entire path is disabled unless user installs explicit marker files.
  * No game-owned assets are added to the source repo or EBOOT. */
-enum { FIGHTER_PACK_MEM_SLOTS=8, FIGHTER_PACK_SEEN=96,
+enum { FIGHTER_PACK_MEM_SLOTS=16,
        FIGHTER_PACK_MAX_WRITES=24 };
 typedef struct FighterPackSlot {
     uint32_t hash,count;
@@ -23,8 +24,8 @@ typedef struct FighterPackSlot {
     unsigned valid;
 } FighterPackSlot;
 static FighterPackSlot sSlots[FIGHTER_PACK_MEM_SLOTS];
-static uint32_t sSeenHash[FIGHTER_PACK_SEEN],sSeenCount[FIGHTER_PACK_SEEN];
-static unsigned sSeenN,sNextSlot,sWrote,sLoaded,sHit,sRejected,sMiss;
+static PspFighterNegativeCache sNegative;
+static unsigned sNextSlot,sWrote,sLoaded,sHit,sRejected,sMiss,sNegativeHit;
 static int sLoadEnabled=-1,sCaptureEnabled=-1;
 
 static int marker(const char *path) {
@@ -59,12 +60,13 @@ const float *PspNativeFighterPacket_Resolve(const float *live,
             ++sHit;return (const float *)slot->data;
         }
     }
-    for(i=0;i<sSeenN;i++)
-        if(sSeenHash[i]==hash && sSeenCount[i]==count)return live;
-    if(sSeenN>=FIGHTER_PACK_SEEN)return live;
-    sSeenHash[sSeenN]=hash;
-    sSeenCount[sSeenN]=count;
-    ++sSeenN;
+    /* Never blacklist a pack that was loaded successfully. Unlike
+       the previous permanent 96-source blacklist, this circular
+       NEGATIVE cache permits new costumes/characters indefinitely. */
+    if(PspFighterNegative_Has(&sNegative,hash,count)) {
+        ++sNegativeHit;
+        return live;
+    }
     snprintf(path,sizeof(path),
              "ms0:/PSP/GAME/BT3/native/fighter_%08x_%u.f3p",
              hash,count);
@@ -85,12 +87,14 @@ const float *PspNativeFighterPacket_Resolve(const float *live,
             }
             ++sRejected;
             fclose(f);
+            PspFighterNegative_Add(&sNegative,hash,count);
             Psp_Log("psp: fighter packet rejected or stale: source=%08x count=%u\n",
                     hash,count);
             return live;
         }
     }
     ++sMiss;
+    PspFighterNegative_Add(&sNegative,hash,count);
     if(!sCaptureEnabled || sWrote>=FIGHTER_PACK_MAX_WRITES)
         return live;
     /* Avoid overwrites; the user can inspect/manually curate captures.
@@ -113,6 +117,6 @@ const float *PspNativeFighterPacket_Resolve(const float *live,
 }
 void PspNativeFighterPacket_Stats(void) {
     if(sLoadEnabled<=0 && sCaptureEnabled<=0)return;
-    Psp_Log("psp: native BT3 fighter packet replay: memory-hits=%u loaded=%u captured=%u misses=%u rejected=%u (exact original vertex input, live bones/GS textures)\n",
-            sHit,sLoaded,sWrote,sMiss,sRejected);
+    Psp_Log("psp: native BT3 fighter packet replay: memory-hits=%u loaded=%u captured=%u misses=%u rejected=%u negative-hits=%u negative-size=%u (exact original vertex input, live bones/GS textures)\n",
+            sHit,sLoaded,sWrote,sMiss,sRejected,sNegativeHit,sNegative.length);
 }
