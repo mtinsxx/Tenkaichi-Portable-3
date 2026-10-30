@@ -154,6 +154,12 @@ jobs:
           gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/src/gs port/psp/test_gs_mirror_scissor.c -o /tmp/tp3-gs-scissor
           /tmp/tp3-gs-scissor
 
+      - name: Test real original BT3 ObjMdlMesh VIF offline fighter asset conversion
+        run: |
+          python3 tools/test_psp_bt3_mesh.py
+          gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/psp port/psp/test_fighter_pack_miss_cache.c -o /tmp/tp3-fighter-pack-cache
+          /tmp/tp3-fighter-pack-cache
+
       - name: Test original BT3 model skeleton, BPE animation and GS material conversion
         run: |
           python3 tools/test_psp_bt3_original.py
