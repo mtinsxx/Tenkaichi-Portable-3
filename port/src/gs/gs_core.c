@@ -1132,11 +1132,13 @@ static void pixel(Target *sf, int ctx, int x, int y, uint32_t z, uint32_t src) {
             out[i] = v < 0 ? 0 : v > 255 ? 255 : (uint32_t)v;
         }
 #ifdef PORT_PSP
-    } else if (sGsMirrorActive) {
-        ++sGsMirrorDestReadSaved;
+    } else {
+        if (sGsMirrorActive) ++sGsMirrorDestReadSaved;
 #else
-    }
+    } else {
 #endif
+        /* No destination read: PS2 ALPHA blending disabled. */
+    }
     if (write_rgb) {
         /* FRAME.FBMSK: bits that are set are NOT written. The game depends on it (it moves single channels
            between the depth buffer, the frame's alpha byte and work buffers, sometimes through a 16-bit view
