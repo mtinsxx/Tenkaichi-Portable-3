@@ -57,6 +57,7 @@
 #include "psp_fb_snapshot_recycle.h"
 #include "psp_stage_compose.h"
 #include "psp_tex_reuse.h"
+#include "psp_gs_no_effect.h"
 #include "psp_tex_lru.h"
 #include "psp_t8_native.h"
 #include "psp_native_t8_pack.h"
@@ -220,6 +221,7 @@ static int sTexCount;
 static PspTexReuse sTexReuse[PSP_TEX_REUSE_SLOTS];
 static uint32_t sTexSerial = 1u;
 static unsigned sTexReuseHits, sTexReuseFullKeys;
+static unsigned sTexReuseReplaceTicket, sTexReuseSecondWay;
 static unsigned sTexReuseUnrelatedUploads, sTexReuseEraseRepairs;
 static Target sTargets[MAX_TARGETS];
 /* GE draw commands reference pointers into this frame-owned immutable arena. */
@@ -233,6 +235,7 @@ static unsigned sFrame;
 static PspDiagAll sPspLogAll;
 static unsigned sDraws, sSkipped, sNewTex, sBatches;
 static unsigned sGsEmptyClipRejects, sGsPrimitiveClipRejects;
+static unsigned sGsNoEffectMasked, sGsNoEffectAlphaNever;
 static unsigned sGsNativeStaticSkips;
 static unsigned sGsFbMaskDraws,sGsFbMaskPartial,sGsFbMaskAlphaOnly;
 static unsigned sLastDrawStaticSkip;
@@ -1056,7 +1059,16 @@ static void *texture_get(int ctx, unsigned lodCap, int white_sprite,
     readW = tw; readH = th;
     tw = Psp_LodDimension(tw, lodCap);
     th = Psp_LodDimension(th, lodCap);
-    reuseSlot = Psp_TexReuseSlot(t0, texa, lodCap, white_sprite);
+    /* Two-way set associative descriptor cache, same exact TEX0/TEXA
+       validation and page-generation/CLUT checks as the original direct
+       map. Hot alternating menu sprites no longer evict each other. */
+    {
+        unsigned base=Psp_TexReuseSlot(t0,texa,lodCap,white_sprite);
+        reuseSlot=Psp_TexReuseChooseWay(
+              sTexReuse,base,t0,texa,sTexSerial,lodCap,white_sprite,
+              (unsigned)sTexCount,sTexReuseReplaceTicket++);
+        if(reuseSlot!=base) ++sTexReuseSecondWay;
+    }
     /* Compute only the page-span, not pixel hashes. A GS upload to an
        unrelated page must not force thousands of unchanged RGB stage
        textures through page hashing and the full cache scan again. */
@@ -1912,6 +1924,20 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
         return;
     }
     sDraws++;
+    /* GS pixel operations with no writes have no GE side effects.
+       Reject before texture/CLUT keying and GPU state setup, including
+       even the no-effect sprite's pass barrier. The reference 4 MiB GS
+       mirror is likewise not invoked on this genuinely inert draw. */
+    {
+        int noEffect=PspGs_GuaranteedNoEffect(
+                           frame,gGs.zbuf[ctx],test);
+        if(noEffect) {
+            if(noEffect==1) ++sGsNoEffectMasked;
+            else ++sGsNoEffectAlphaNever;
+            ++sSkipped;
+            return;
+        }
+    }
     if(type==6) psp_gu_mark_pass(PSP_GU_PASS_SPRITE);
     /* Reject GS pixels with no possible scissor coverage before doing
        expensive texture decode, framebuffer aliasing or GE state setup.
@@ -3564,6 +3590,9 @@ void Psp_GuStats(unsigned out[4]) {
     Psp_Log("psp: GS PSMCT16/16S direct colour: native=%u legacy-skipped=%u option=%d (depth-texture/GS-VRAM swizzle still unsupported)\n",
             sDiagFb16Native, sDiagSkip16, gPspGsFb16);
     sDiagFb16Native = 0;
+    Psp_Log("psp: GS no-effect draw elimination: FBMSK-all-and-ZMSK=%u alpha-never-keep=%u (exact PS2 no-write semantics, before GU/TEX0)\n",
+            sGsNoEffectMasked,sGsNoEffectAlphaNever);
+    sGsNoEffectMasked=sGsNoEffectAlphaNever=0;
     Psp_Log("psp: GS source scissor culling: empty=%u fully-outside=%u (before texture cache/GE)\n",
             sGsEmptyClipRejects,sGsPrimitiveClipRejects);
     sGsEmptyClipRejects=sGsPrimitiveClipRejects=0;
@@ -3715,6 +3744,9 @@ void Psp_GuStats(unsigned out[4]) {
             sTexCount, MAX_TEX, sTexMem / 1024u, sTexRamMem / 1024u,
             sTexRamPeak / 1024u, sTexCacheHits, sTexCacheMisses,
             sTexCacheEvicted, sTexHeapFailed, sTexOversized);
+    Psp_Log("psp: 2-way TEX0 menu hot cache: second-way-lookups=%u total-slots=%u (full TEX0/TEXA/page/CLUT validation)\n",
+            sTexReuseSecondWay,(unsigned)PSP_TEX_REUSE_SLOTS);
+    sTexReuseSecondWay=0;
     Psp_Log("psp: texture guarded reuse: hits=%u full-key=%u unrelated-upload-skips=%u epoch=%u serial=%u erase-index-repairs=%u\n",
             sTexReuseHits, sTexReuseFullKeys, sTexReuseUnrelatedUploads,
             gGsPspTextureEpoch, sTexSerial, sTexReuseEraseRepairs);
