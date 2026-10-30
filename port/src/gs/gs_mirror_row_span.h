@@ -18,7 +18,9 @@ static inline float GsMirror_RowEdge(float ax,float ay,float bx,float by,
 static inline int GsMirror_RowSpanOutside(float ax,float ay,float bx,float by,
                                          float cx,float cy,float area,
                                          int x0,int x1,int y) {
-    const float margin=1.0f;
+    /* Float edge arithmetic at +/-2048 can round by >=1 at extreme
+       coordinates. Skip ONLY pixels clearly outside by 16 edge units. */
+    const float margin=16.0f;
     float e0,e1;
     if(x0>x1 || !isfinite(area) || fabsf(area)<1.0f ||
        !isfinite(ax) || !isfinite(ay) ||
