@@ -64,6 +64,41 @@ int main(void) {
         assert(!Psp_TexReuseKeyStable(&e,t,a,31,256,0,4));
         assert(!Psp_TexReuseKeyStable(&e,t+1,a,32,256,0,4));
     }
+    {
+        /* Alternating TEX0 values deliberately colliding in one set:
+         * the old direct-map cache evicted the other one on EVERY draw.
+         * Both are now retained with fully checked TEX0/TEXA/serial. */
+        static PspTexReuse ways[PSP_TEX_REUSE_SLOTS];
+        uint64_t a0=UINT64_C(0x120034);
+        uint64_t b0=a0+1u;
+        unsigned base=Psp_TexReuseSlot(a0,a,256,0);
+        unsigned first,second,i;
+        for(i=0;i<1000000u;i++,b0++)
+            if(b0!=a0 && Psp_TexReuseSlot(b0,a,256,0)==base)break;
+        assert(i<1000000u);
+        assert((base&1u)==0u && base+1u<PSP_TEX_REUSE_SLOTS);
+        first=Psp_TexReuseChooseWay(ways,base,a0,a,31,256,0,8,0);
+        assert(first==base);
+        Psp_TexReuseRemember(&ways[first],a0,a,41,31,256,0,2);
+        second=Psp_TexReuseChooseWay(ways,base,b0,a,31,256,0,8,0);
+        assert(second==base+1u);
+        Psp_TexReuseRemember(&ways[second],b0,a,41,31,256,0,3);
+        for(i=0;i<2000u;i++) {
+            assert(Psp_TexReuseChooseWay(ways,base,a0,a,31,256,0,8,i&1u)==base);
+            assert(Psp_TexReuseChooseWay(ways,base,b0,a,31,256,0,8,i&1u)==base+1u);
+            assert(Psp_TexReuseMatches(&ways[base],a0,a,41,31,256,0,8));
+            assert(Psp_TexReuseMatches(&ways[base+1u],b0,a,41,31,256,0,8));
+        }
+        /* Upload epoch mismatch cannot be silently accepted: the
+         * matching descriptor is selected, but full epoch/page check
+         * will reject a stale texture. */
+        assert(!Psp_TexReuseMatches(&ways[base],a0,a,42,31,256,0,8));
+        assert(Psp_TexReuseChooseWay(ways,base,a0,a,31,256,0,8,1)==base);
+        assert(Psp_TexReuseChooseWay(ways,base,a0,a,32,256,0,8,1)==base);
+        /* Serial mismatch invalidates an old descriptor before a new
+         * cached texture can adopt that way. */
+        assert(!Psp_TexReuseMatches(&ways[base],a0,a,41,32,256,0,8));
+    }
     puts("PSP GS guarded texture reuse invalidation passed");
     return 0;
 }
