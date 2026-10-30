@@ -37,6 +37,21 @@ int main(void) {
     /* Same physical target already contains the stage; do not
        overwrite it with a redundant/overlapping GPU copy. */
     assert(!decision(17,17,91,91,stage,stage,1,1,1,0));
+    /* The second WORK owner can overwrite a completed stage in the
+       same GE list. Only a matching immutable snapshot may then be
+       composed, never a newer owner or an older GS generation. */
+    assert(PspStageCompose_UseSnapshot(91,91,1,1,0,0));
+    assert(PspStageCompose_UseSnapshot(91,91,1,1,0,1));
+    assert(PspStageCompose_UseSnapshot(91,91,1,1,1,0));
+    assert(!PspStageCompose_UseSnapshot(91,92,1,1,0,0));
+    assert(!PspStageCompose_UseSnapshot(91,91,0,1,0,0));
+    assert(!PspStageCompose_UseSnapshot(91,91,1,0,0,0));
+    assert(!PspStageCompose_UseSnapshot(91,91,1,1,1,1));
+    assert(!PspStageCompose_UseSnapshot(0,0,1,1,0,0));
+    /* Once the immutable source is chosen, it is an ordinary GE copy
+       and the original ownership check remains meaningful. */
+    assert(decision(17,17,91,91,0x08810000u,fighter,1,1,1,0));
+    assert(!decision(17,17,91,91,0x08810000u,fighter,1,1,0,0));
     puts("PSP stage -> fighter GE compositing guard tests passed");
     return 0;
 }
