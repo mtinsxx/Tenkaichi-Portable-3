@@ -2602,11 +2602,16 @@ static void Psp_StageComposeBeforeFighter(int ctx) {
     for(i=0u;i<MAX_TARGETS;i++) {
         Target *t=&sTargets[i];
         int versionMatches,physicalReady;
-        if(!t->used || t->fbp!=sStageImage.fbp ||
-           (uintptr_t)t->color!=src)continue;
+        if(!t->used || t->fbp!=sStageImage.fbp)continue;
         versionMatches=t->gen==sStageImage.gen &&
                        t->snapVersion.written==sStageImage.written;
-        physicalReady=versionMatches && t->rendered && ownerValid;
+        /* Physical stage must still reside at the EXACT backing
+           recorded for these pixels. A screen swap may remap the
+           logical FBP before fighters start; its valid RAM snapshot
+           is still usable without treating the new backing as old. */
+        physicalReady=versionMatches &&
+                      (uintptr_t)t->color==src &&
+                      t->rendered && ownerValid;
         if(physicalReady) {
             sourceReady=1;
             break;
