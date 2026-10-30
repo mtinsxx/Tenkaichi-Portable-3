@@ -3800,6 +3800,9 @@ void Psp_GuStats(unsigned out[4]) {
             Gs_PspMirrorNoopDraws(),Gs_PspMirrorBadBounds());
     Psp_Log("psp: GS exact mirror CPU measured elapsed=%u ms/interval (full duration of pixel raster; no sampled extrapolation)\n",
             Gs_PspMirrorTakeCpuMs());
+    Psp_Log("psp: GS exact mirror changed-word coherence: unchanged-writes=%u changed-writes=%u identical-draws=%u (cumulative, full PS2 32-bit GS bytes)\n",
+            Gs_PspMirrorUnchangedWordWrites(),Gs_PspMirrorChangedWordWrites(),
+            Gs_PspMirrorIdenticalDraws());
     Psp_Log("psp: exact GS VRAM feedback mirror: tracked-fbps=%u CPU-rasterized-draws=%u dirty-8KB-pages=%u (PSMCT32 <-> PSMT8 share original 4MB GS bytes)\n",
             Gs_PspMirrorTrackedCount(),Gs_PspMirrorDrawCount(),
             Gs_PspMirrorDirtyPageCount());
