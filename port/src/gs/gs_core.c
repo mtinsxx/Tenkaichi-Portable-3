@@ -32,6 +32,7 @@
 #ifdef PORT_PSP
 #include "gs_raster_bounds.h"
 #include "gs_mirror_fast.h"
+#include "gs_mirror_row_span.h"
 #endif
 
 #define SURF_W 1024
@@ -94,10 +95,12 @@ unsigned Gs_PspMirrorTrackedCount(void) {return sGsMirrorTrackedCount;}
 unsigned Gs_PspMirrorBoundsCulled(void) {return sGsMirrorBoundsCulled;}
 static unsigned sGsMirrorEarlyRejected,sGsMirrorNoopDraws,sGsMirrorBadBounds;
 static unsigned sGsMirrorDestReadSaved;
+static unsigned long long sGsMirrorRowSpanSkipped;
 unsigned Gs_PspMirrorEarlyRejected(void) {return sGsMirrorEarlyRejected;}
 unsigned Gs_PspMirrorNoopDraws(void) {return sGsMirrorNoopDraws;}
 unsigned Gs_PspMirrorBadBounds(void) {return sGsMirrorBadBounds;}
 unsigned Gs_PspMirrorDestReadSaved(void) {return sGsMirrorDestReadSaved;}
+unsigned Gs_PspMirrorRowSpanSkippedK(void) {return (unsigned)(sGsMirrorRowSpanSkipped/1000u);}
 unsigned Gs_PspMirrorCandidatesAvoidedK(void) {
     return (unsigned)(sGsMirrorCandidatesAvoided/1000u);
 }
@@ -1280,6 +1283,18 @@ static void draw_triangle(Target *sf, int ctx, const Vertex *a, const Vertex *b,
 #endif
     for (y = (int)miny; y <= (int)maxy; y++) {
         for (x = (int)minx; x <= (int)maxx; x++) {
+#ifdef PORT_PSP
+            if (sGsMirrorActive && ((x - (int)minx) & 15) == 0) {
+                int end=x+15;
+                if(end>(int)maxx)end=(int)maxx;
+                if(GsMirror_RowSpanOutside(a->x,a->y,b->x,b->y,
+                                           c->x,c->y,area,x,end,y)) {
+                    sGsMirrorRowSpanSkipped+=(unsigned)(end-x+1);
+                    x=end; /* for increments once; EXACT original traversal */
+                    continue;
+                }
+            }
+#endif
             /* weights in double precision and results rounded, not truncated: with float weights that sum to just
                under 1 a flat triangle's depth came out one unit low on some pixels, and the fighters' black outline
                hull (drawn at almost the same depth as the body) showed through as speckles */
