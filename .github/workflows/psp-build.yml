@@ -161,6 +161,12 @@ jobs:
           gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/src/gs port/psp/test_gs_mirror_source_blend.c -lm -o /tmp/tp3-gs-source-blend
           /tmp/tp3-gs-source-blend
 
+      - name: Test exact PS2 GS 4/8/16/24/32-bit dirty-word coherency
+        run: |
+          gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/src/gs \
+            port/psp/test_gs_mirror_word_delta.c -o /tmp/tp3-gs-word-delta
+          /tmp/tp3-gs-word-delta
+
       - name: Test exact accelerated GS mirror raster and invalid geometry fallback
         run: |
           gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/src/gs port/psp/test_gs_mirror_fast.c -lm -o /tmp/tp3-gs-mirror-fast

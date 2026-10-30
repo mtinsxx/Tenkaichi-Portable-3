@@ -34,6 +34,7 @@
 #include "gs_mirror_fast.h"
 #include "gs_mirror_row_span.h"
 #include "gs_mirror_scanline.h"
+#include "gs_mirror_word_delta.h"
 #endif
 
 #define SURF_W 1024
@@ -89,6 +90,10 @@ unsigned Gs_PspMirrorTakeCpuMs(void) {
     return ms;
 }
 static unsigned sGsMirrorDraws,sGsMirrorDirtyPages,sGsMirrorTrackedCount;
+static unsigned sGsMirrorUnchangedWrites,sGsMirrorChangedWrites,sGsMirrorSameDraws;
+unsigned Gs_PspMirrorUnchangedWordWrites(void) {return sGsMirrorUnchangedWrites;}
+unsigned Gs_PspMirrorChangedWordWrites(void) {return sGsMirrorChangedWrites;}
+unsigned Gs_PspMirrorIdenticalDraws(void) {return sGsMirrorSameDraws;}
 static unsigned sGsMirrorBoundsCulled;
 static unsigned long long sGsMirrorCandidatesAvoided;
 void Gs_PspMirrorEnableFbp(uint32_t fbp) {
@@ -599,17 +604,36 @@ static inline void plane_bump(uint32_t b, int planes) {
  * pixels touched. A single generation bump per dirty 8 KiB page
  * invalidates both PSMCT32 and PSMT8 views of the exact same bytes.
  * Non-mirrored GS uploads retain their existing generation tracking. */
-#define VRAM_TOUCH(n) do { \
-    if (write && sGsMirrorActive && \
-        PspGsMirrorMarkPage(sGsMirrorPageStamp,(n),sGsMirrorDrawStamp)) { \
-        unsigned pg=PspGsMirrorPageOfBlock((n)); \
-        ++gGsPageGen[pg]; \
-        ++gGsPageSig[pg]; \
-        ++sGsMirrorDirtyPages; \
+/* Track only words whose underlying PS2 GS bytes actually change.
+ * Before: VRAM_TOUCH ran on every attempted pixel write, even when an
+ * unchanged 32-bit/16-bit/indexed plane was written again. That bumped
+ * page generations, invalidating cached texture/CLUT data, and could
+ * cause thousands of redundant texture reconstructions per battle.
+ * A single changed word still dirties the original 8 KiB GS page ONCE
+ * per draw, shared across all PSM interpretations. */
+#define VRAM_TOUCH(n) ((void)0)
+#define VRAM_STORE(n,newvalue) do { \
+    uint32_t merged_=(newvalue); \
+    if (GsMirror_WordChanged(*w,merged_)) { \
+        *w=merged_; \
+        if (write && sGsMirrorActive) { \
+            ++sGsMirrorChangedWrites; \
+            if (PspGsMirrorMarkPage(sGsMirrorPageStamp,(n),sGsMirrorDrawStamp)) { \
+                unsigned page_=PspGsMirrorPageOfBlock((n)); \
+                ++gGsPageGen[page_]; \
+                ++gGsPageSig[page_]; \
+                ++sGsMirrorDirtyPages; \
+            } \
+        } \
+    } else if (write && sGsMirrorActive) { \
+        ++sGsMirrorUnchangedWrites; \
     } \
 } while(0)
 #else
 #define VRAM_TOUCH(n) ((void)0)
+#endif
+#ifndef VRAM_STORE
+#define VRAM_STORE(n,newvalue) do { (void)(n); *w=(newvalue); } while(0)
 #endif
 
 /* Reads (write = 0) or writes the pixel (x, y) of a buffer at bp, width bw, format psm. Value: the stored bits.
@@ -633,21 +657,21 @@ static uint32_t vram_rw(uint32_t bp, uint32_t bw, uint32_t psm, uint32_t x, uint
         if (write == 2) { return (a >> 7) & 0x3FFF; }
         VRAM_TOUCH(a >> 7);
         w = &sVram[(a >> 1) & 0xFFFFF];
-        if (write) { *w = (*w & ~(0xFFFFu << ((a & 1) * 16))) | (v & 0xFFFF) << ((a & 1) * 16); return 0; }
+        if (write) { VRAM_STORE(a >> 7, (*w & ~(0xFFFFu << ((a & 1) * 16))) | (v & 0xFFFF) << ((a & 1) * 16)); return 0; }
         return (*w >> ((a & 1) * 16)) & 0xFFFF;
     case 0x13: /* 8 bits */
         a = ((bp + ((y >> 1) & ~0x1Fu) * (bw >> 1) + ((x >> 2) & ~0x1Fu) + kBlock32[(y >> 4) & 3][(x >> 4) & 7]) << 8) + sCol8[y & 15][x & 15];
         if (write == 2) { return (a >> 8) & 0x3FFF; }
         VRAM_TOUCH(a >> 8);
         w = &sVram[(a >> 2) & 0xFFFFF];
-        if (write) { *w = (*w & ~(0xFFu << ((a & 3) * 8))) | (v & 0xFF) << ((a & 3) * 8); return 0; }
+        if (write) { VRAM_STORE(a >> 8, (*w & ~(0xFFu << ((a & 3) * 8))) | (v & 0xFF) << ((a & 3) * 8)); return 0; }
         return (*w >> ((a & 3) * 8)) & 0xFF;
     case 0x14: /* 4 bits */
         a = ((bp + ((y >> 2) & ~0x1Fu) * (bw >> 1) + ((x >> 2) & ~0x1Fu) + kBlock16[(y >> 4) & 7][(x >> 5) & 3]) << 9) + sCol4[y & 15][x & 31];
         if (write == 2) { return (a >> 9) & 0x3FFF; }
         VRAM_TOUCH(a >> 9);
         w = &sVram[(a >> 3) & 0xFFFFF];
-        if (write) { *w = (*w & ~(0xFu << ((a & 7) * 4))) | (v & 0xF) << ((a & 7) * 4); return 0; }
+        if (write) { VRAM_STORE(a >> 9, (*w & ~(0xFu << ((a & 7) * 4))) | (v & 0xF) << ((a & 7) * 4)); return 0; }
         return (*w >> ((a & 7) * 4)) & 0xF;
     default: /* 32 bits, and the formats that live inside a 32-bit pixel */
         a = ((bp + (y & ~0x1Fu) * bw + ((x >> 1) & ~0x1Fu) + (kBlock32[(y >> 3) & 3][(x >> 3) & 7] ^ zx)) << 6) + kCol32[y & 7][x & 7];
@@ -655,11 +679,11 @@ static uint32_t vram_rw(uint32_t bp, uint32_t bw, uint32_t psm, uint32_t x, uint
         VRAM_TOUCH(a >> 6);
         w = &sVram[a & 0xFFFFF];
         switch (psm) {
-        case 0x01: if (write) { *w = (*w & 0xFF000000u) | (v & 0xFFFFFF); return 0; } return *w & 0xFFFFFF;
-        case 0x1B: if (write) { *w = (*w & 0x00FFFFFFu) | v << 24; return 0; } return *w >> 24;
-        case 0x24: if (write) { *w = (*w & 0xF0FFFFFFu) | (v & 15) << 24; return 0; } return (*w >> 24) & 15;
-        case 0x2C: if (write) { *w = (*w & 0x0FFFFFFFu) | (v & 15) << 28; return 0; } return *w >> 28;
-        default: if (write) { *w = v; return 0; } return *w;
+        case 0x01: if (write) { VRAM_STORE(a >> 6, (*w & 0xFF000000u) | (v & 0xFFFFFF)); return 0; } return *w & 0xFFFFFF;
+        case 0x1B: if (write) { VRAM_STORE(a >> 6, (*w & 0x00FFFFFFu) | v << 24); return 0; } return *w >> 24;
+        case 0x24: if (write) { VRAM_STORE(a >> 6, (*w & 0xF0FFFFFFu) | (v & 15) << 24); return 0; } return (*w >> 24) & 15;
+        case 0x2C: if (write) { VRAM_STORE(a >> 6, (*w & 0x0FFFFFFFu) | (v & 15) << 28); return 0; } return *w >> 28;
+        default: if (write) { VRAM_STORE(a >> 6, v); return 0; } return *w;
         }
     }
 }
@@ -1402,6 +1426,7 @@ void Gs_PspMirrorDraw(int type,int ctx,const GsVertex *v) {
         sGsMirrorDrawStamp=1u;
     }
     sGsMirrorActive=1;
+    unsigned dirtyBefore=sGsMirrorDirtyPages;
     /* Direct wall-clock accounting, not a x16/x32 sample estimate:
        confirms whether PS2 32-bit GS mirror is consuming the chain. */
     unsigned long long mirrorStartedUs=Psp_TimeUs();
@@ -1420,7 +1445,11 @@ void Gs_PspMirrorDraw(int type,int ctx,const GsVertex *v) {
     ++sGsMirrorDraws;
     /* Invalidate the per-draw hot texture reuse table, even if a pass
        writes only Z/alpha bytes or a framebuffer's upper byte. */
-    if(mirrorTarget.drawn)++gGsPspTextureEpoch;
+    if(sGsMirrorDirtyPages!=dirtyBefore) {
+        ++gGsPspTextureEpoch;
+    } else {
+        ++sGsMirrorSameDraws;
+    }
 }
 #endif
 
