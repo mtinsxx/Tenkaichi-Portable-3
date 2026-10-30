@@ -54,6 +54,8 @@ unsigned Gs_PspMirrorEarlyRejected(void);
 unsigned Gs_PspMirrorNoopDraws(void);
 unsigned Gs_PspMirrorBadBounds(void);
 unsigned Gs_PspMirrorDestReadSaved(void);
+unsigned Gs_PspMirrorRowSpanSkippedK(void);
+unsigned Gs_PspMirrorSourceBlendAvoided(void);
 #endif
 extern unsigned gGsFrame;
 
