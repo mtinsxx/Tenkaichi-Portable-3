@@ -10,6 +10,10 @@
  * When the arena fills, finish/sync the command list before recycling.
  */
 #define PSP_GU_VERTEX_FRAME_VERTICES (96u * 1024u)
+/* Hardware GU still receives ordinary triangles; increase the maximum
+ * identical-state draw-array group, not polygon count or VRAM usage.
+ * Keep count within the 16-bit GE vertex-count field. */
+#define PSP_GU_VERTEX_BATCH_VERTICES (12u * 1024u)
 
 static inline int PspGuVertexArena_Fits(unsigned committed,
                                         unsigned pending,
