@@ -43,6 +43,32 @@ int main(void){
       }
     }
   }
+  /* Extreme original stage vertex positions (offscreen geometry,
+     screen-sized triangles and both windings). Allow large numeric
+     endpoints but never clip a pixel that exact double math covers. */
+  for(caseId=0;caseId<300u;caseId++){
+    V a,b,c;
+    float area;
+    int x,y;
+    a.x=(float)((int)(random_u32()%3401u)-1700);
+    a.y=(float)((int)(random_u32()%3401u)-1700);
+    b.x=(float)((int)(random_u32()%3401u)-1700);
+    b.y=(float)((int)(random_u32()%3401u)-1700);
+    c.x=(float)((int)(random_u32()%3401u)-1700);
+    c.y=(float)((int)(random_u32()%3401u)-1700);
+    area=edge(a,b,c.x,c.y);
+    if(area==0.f)continue;
+    for(y=0;y<64;y++)for(x=0;x<64;x+=16){
+      int xx,skip=GsMirror_RowSpanOutside(
+          a.x,a.y,b.x,b.y,c.x,c.y,area,x,x+15,y);
+      for(xx=x;xx<x+16;xx++){
+         double w0=(double)edge(b,c,(float)xx,(float)y)/(double)area;
+         double w1=(double)edge(c,a,(float)xx,(float)y)/(double)area;
+         double w2=1.0-w0-w1;
+         if(skip)assert(!(w0>=0 && w1>=0 && w2>=-1e-9));
+      }
+    }
+  }
   /* Critical cases: never cull an invalid or tiny-area triangle. */
   assert(!GsMirror_RowSpanOutside(0,0,100,0,0,100,NAN,0,15,0));
   assert(!GsMirror_RowSpanOutside(0,0,100,0,0,100,0.5f,0,15,0));
