@@ -50,6 +50,10 @@ unsigned Gs_PspMirrorTrackedCount(void);
 /* Work avoided by exact PS2 GS scissor pre-culling of CPU mirror draws. */
 unsigned Gs_PspMirrorBoundsCulled(void);
 unsigned Gs_PspMirrorCandidatesAvoidedK(void);
+unsigned Gs_PspMirrorEarlyRejected(void);
+unsigned Gs_PspMirrorNoopDraws(void);
+unsigned Gs_PspMirrorBadBounds(void);
+unsigned Gs_PspMirrorDestReadSaved(void);
 #endif
 extern unsigned gGsFrame;
 

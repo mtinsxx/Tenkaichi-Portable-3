@@ -124,7 +124,13 @@ static inline int PspStage4_TransformClipReady(PspStage4Vertex *out,
     out->g = PspStage4_Color(color[1]);
     out->b = PspStage4_Color(color[2]);
     out->a = PspStage4_Color(color[3]);
-    return __builtin_isfinite(out->x) && __builtin_isfinite(out->y);
+    /* Finite original ST and W can still overflow when ST/W is
+       converted to PSP GU texel coordinates. Reject to the reference
+       interpreter rather than passing infinity to the GPU (which can
+       manifest as stretched/black stage polygons). */
+    return __builtin_isfinite(out->x) && __builtin_isfinite(out->y) &&
+           __builtin_isfinite(out->s) && __builtin_isfinite(out->t) &&
+           __builtin_isfinite(out->q);
 }
 /* Preserve the original entry point for independent users and validation. */
 static inline int PspStage4_Transform(PspStage4Vertex *out, const float *pos,

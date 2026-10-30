@@ -57,6 +57,16 @@ int main(void) {
     assert(!PspStage4_Transform(&out, pos, color, st, m, 0, 0));
     m[0] = 1.0f;
 
+    /* Finite ST and W can overflow AFTER perspective division.
+       Never send infinity into PSP GU texture interpolation: the
+       legacy interpreter must handle this invalid native batch. */
+    {
+        float smallPos[4]={0.f,0.f,0.f,0.001f};
+        float hugeSt[4]={3.0e38f,0.5f,1.0f,0.f};
+        assert(!PspStage4_Transform(&out,smallPos,color,hugeSt,m,0,0));
+        assert(PspStage4_Transform(&out,smallPos,color,st,m,0,0));
+    }
+
     /* 32-bit Z range guard and saturating RGBA conversion. */
     assert(PspStage4_Color(-20.0f) == 0);
     assert(PspStage4_Color(42.99f) == 42);

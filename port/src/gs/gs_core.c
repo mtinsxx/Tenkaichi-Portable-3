@@ -31,6 +31,7 @@
 #include "gs_internal.h"
 #ifdef PORT_PSP
 #include "gs_raster_bounds.h"
+#include "gs_mirror_fast.h"
 #endif
 
 #define SURF_W 1024
@@ -91,6 +92,12 @@ unsigned Gs_PspMirrorDrawCount(void) {return sGsMirrorDraws;}
 unsigned Gs_PspMirrorDirtyPageCount(void) {return sGsMirrorDirtyPages;}
 unsigned Gs_PspMirrorTrackedCount(void) {return sGsMirrorTrackedCount;}
 unsigned Gs_PspMirrorBoundsCulled(void) {return sGsMirrorBoundsCulled;}
+static unsigned sGsMirrorEarlyRejected,sGsMirrorNoopDraws,sGsMirrorBadBounds;
+static unsigned sGsMirrorDestReadSaved;
+unsigned Gs_PspMirrorEarlyRejected(void) {return sGsMirrorEarlyRejected;}
+unsigned Gs_PspMirrorNoopDraws(void) {return sGsMirrorNoopDraws;}
+unsigned Gs_PspMirrorBadBounds(void) {return sGsMirrorBadBounds;}
+unsigned Gs_PspMirrorDestReadSaved(void) {return sGsMirrorDestReadSaved;}
 unsigned Gs_PspMirrorCandidatesAvoidedK(void) {
     return (unsigned)(sGsMirrorCandidatesAvoided/1000u);
 }
@@ -1098,15 +1105,22 @@ static void pixel(Target *sf, int ctx, int x, int y, uint32_t z, uint32_t src) {
         default: if (z <= zd) { sPix[2]++; return; } break;
         }
     }
-    d = vram_rw(fbp, fbw, fpsm, (uint32_t)x, (uint32_t)y, 0, 0);
-    if (Gs_PsmBits(fpsm) == 16) {
-        d = (d & 31) << 3 | ((d >> 5) & 31) << 11 | ((d >> 10) & 31) << 19 | ((d & 0x8000) ? 0x80000000u : 0);
-    } else if (fpsm == 1) {
-        d |= 0x80000000u;
-    }
+    /* The existing mirror unconditionally reads the destination
+       framebuffer even for unblended draws. Its colour is referenced
+       ONLY by PS2 ALPHA blending below. For ordinary opaque geometry,
+       skip that swizzled GS VRAM fetch entirely; all masks and depth
+       processing are unchanged. This applies to all software GS draws. */
     sr = src & 0xFF; sg = (src >> 8) & 0xFF; sb = (src >> 16) & 0xFF;
     out[0] = sr; out[1] = sg; out[2] = sb;
     if ((pr >> 6) & 1) { /* blending: ((A - B) * C >> 7) + D */
+        d = vram_rw(fbp, fbw, fpsm, (uint32_t)x, (uint32_t)y, 0, 0);
+        if (Gs_PsmBits(fpsm) == 16) {
+            d = (d & 31) << 3 | ((d >> 5) & 31) << 11 |
+                ((d >> 10) & 31) << 19 |
+                ((d & 0x8000) ? 0x80000000u : 0);
+        } else if (fpsm == 1) {
+            d |= 0x80000000u;
+        }
         uint32_t s[3] = {sr, sg, sb};
         uint32_t c = ((al >> 4) & 3) == 0 ? sa : ((al >> 4) & 3) == 1 ? d >> 24 : (uint32_t)((al >> 32) & 0xFF);
         for (i = 0; i < 3; i++) {
@@ -1117,6 +1131,13 @@ static void pixel(Target *sf, int ctx, int x, int y, uint32_t z, uint32_t src) {
             int v = (((a - b) * (int)c) >> 7) + dd;
             out[i] = v < 0 ? 0 : v > 255 ? 255 : (uint32_t)v;
         }
+#ifdef PORT_PSP
+    } else {
+        if (sGsMirrorActive) ++sGsMirrorDestReadSaved;
+#else
+    } else {
+#endif
+        /* No destination read: PS2 ALPHA blending disabled. */
     }
     if (write_rgb) {
         /* FRAME.FBMSK: bits that are set are NOT written. The game depends on it (it moves single channels
@@ -1221,6 +1242,12 @@ static void draw_triangle(Target *sf, int ctx, const Vertex *a, const Vertex *b,
     if (area == 0.0f) {
         return;
     }
+#ifdef PORT_PSP
+    if (sGsMirrorActive && !isfinite(area)) {
+        ++sGsMirrorBadBounds;
+        return; /* undefined GS mirror raster: never cast NaN/inf */
+    }
+#endif
     if (b->x < minx) { minx = b->x; } if (c->x < minx) { minx = c->x; }
     if (b->x > maxx) { maxx = b->x; } if (c->x > maxx) { maxx = c->x; }
     if (b->y < miny) { miny = b->y; } if (c->y < miny) { miny = c->y; }
@@ -1228,6 +1255,11 @@ static void draw_triangle(Target *sf, int ctx, const Vertex *a, const Vertex *b,
     if (minx < 0) { minx = 0; } if (miny < 0) { miny = 0; }
     if (maxx > SURF_W - 1) { maxx = SURF_W - 1; } if (maxy > SURF_H - 1) { maxy = SURF_H - 1; }
 #ifdef PORT_PSP
+    if (sGsMirrorActive &&
+        !GsMirror_BoundsMayOverlap(minx,maxx,miny,maxy,SURF_W,SURF_H)) {
+        ++sGsMirrorBadBounds; /* no overlap or invalid coordinate */
+        return;
+    }
     if (sGsMirrorActive) {
         /* Keep original edge equations and barycentric coordinates.
            Only skip pixels the PS2 GS scissor would discard anyway. */
@@ -1251,7 +1283,22 @@ static void draw_triangle(Target *sf, int ctx, const Vertex *a, const Vertex *b,
             /* weights in double precision and results rounded, not truncated: with float weights that sum to just
                under 1 a flat triangle's depth came out one unit low on some pixels, and the fighters' black outline
                hull (drawn at almost the same depth as the body) showed through as speckles */
-            double w0 = (double)edge(b, c, (float)x, (float)y) / (double)area, w1 = (double)edge(c, a, (float)x, (float)y) / (double)area, w2 = 1.0 - w0 - w1;
+            /* Two exact source edge values determine the sign of the
+               first two barycentric weights. Reject non-covering pixels
+               BEFORE two double-precision divides, depth interpolation
+               and texture/CLUT sampling. Covered pixels still execute
+               the ORIGINAL double math and the third-weight tolerance. */
+            float e0 = edge(b,c,(float)x,(float)y);
+            float e1 = edge(c,a,(float)x,(float)y);
+#ifdef PORT_PSP
+            if (sGsMirrorActive && GsMirror_EarlyReject(area,e0,e1)) {
+                ++sGsMirrorEarlyRejected;
+                continue;
+            }
+#endif
+            double w0 = (double)e0 / (double)area;
+            double w1 = (double)e1 / (double)area;
+            double w2 = 1.0 - w0 - w1;
             uint32_t col;
 
             if (w0 < 0.0 || w1 < 0.0 || w2 < -1e-9) {
@@ -1294,6 +1341,12 @@ void Gs_PspMirrorDraw(int type,int ctx,const GsVertex *v) {
     if(!v||ctx<0||ctx>1||sGsMirrorActive)return;
     fbp=(uint32_t)(gs.frame[ctx]&511u);
     if(!PspGsMirrorShouldDraw(sGsMirrorTracked,fbp))return;
+    /* This GS primitive cannot write either framebuffer or depth.
+       Avoid its entire CPU raster pass; DATE/alpha test are read-only. */
+    if(GsMirror_IsNoop(gs.frame[ctx],gs.zbuf[ctx])) {
+        ++sGsMirrorNoopDraws;
+        return;
+    }
     if(++sGsMirrorDrawStamp==0u) {
         memset(sGsMirrorPageStamp,0,sizeof(sGsMirrorPageStamp));
         sGsMirrorDrawStamp=1u;

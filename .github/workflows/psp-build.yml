@@ -149,6 +149,11 @@ jobs:
           gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_shadow6.c -lm -o /tmp/tp3-shadow6
           /tmp/tp3-shadow6
 
+      - name: Test exact accelerated GS mirror raster and invalid geometry fallback
+        run: |
+          gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/src/gs port/psp/test_gs_mirror_fast.c -lm -o /tmp/tp3-gs-mirror-fast
+          /tmp/tp3-gs-mirror-fast
+
       - name: Test native PSP GS software mirror scissor parity
         run: |
           gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/src/gs port/psp/test_gs_mirror_scissor.c -o /tmp/tp3-gs-scissor
