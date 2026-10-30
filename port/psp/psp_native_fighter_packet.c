@@ -4,6 +4,7 @@
 #include <string.h>
 #include "psp_native_fighter_packet.h"
 #include "psp_fighter_pack_miss_cache.h"
+#include "psp_auto_model_prepare.h"
 
 extern void Psp_Log(const char *, ...);
 
@@ -15,7 +16,7 @@ extern void Psp_Log(const char *, ...);
  *
  * Entire path is disabled unless user installs explicit marker files.
  * No game-owned assets are added to the source repo or EBOOT. */
-enum { FIGHTER_PACK_MEM_SLOTS=16,
+enum { FIGHTER_PACK_MEM_SLOTS=32,
        FIGHTER_PACK_MAX_WRITES=24 };
 typedef struct FighterPackSlot {
     uint32_t hash,count;
@@ -26,8 +27,44 @@ typedef struct FighterPackSlot {
 static FighterPackSlot sSlots[FIGHTER_PACK_MEM_SLOTS];
 static PspFighterNegativeCache sNegative;
 static unsigned sNextSlot,sWrote,sLoaded,sHit,sRejected,sMiss,sNegativeHit;
+static unsigned sAutoModels,sAutoInserted,sAutoHits;
+static int sAutoReady;
 static int sLoadEnabled=-1,sCaptureEnabled=-1;
 
+/* Called once when BT3 binds an already-loaded original model, before
+ * the game's MdlTex_RebaseChain edits its VIF material references.
+ * Copies only proven literal original fighter vertices into bounded RAM.
+ * The data never outlives its original file buffer by pointer; the
+ * native draw still uses CURRENT game's bones and GS material state. */
+static int auto_store(const uint8_t *v,unsigned count,unsigned node,void *ctx) {
+    unsigned i;
+    size_t bytes=PspFighterPacket_Length(count);
+    uint32_t hash;
+    FighterPackSlot *slot;
+    (void)node;(void)ctx;
+    if(!bytes)return 0;
+    hash=PspFighterPacket_Fnv(v,bytes);
+    for(i=0;i<FIGHTER_PACK_MEM_SLOTS;i++) {
+        slot=&sSlots[i];
+        if(slot->valid && slot->hash==hash && slot->count==count &&
+           memcmp(slot->data,v,bytes)==0)return 1;
+    }
+    slot=&sSlots[sNextSlot++%FIGHTER_PACK_MEM_SLOTS];
+    memcpy(slot->data,v,bytes);
+    slot->hash=hash;slot->count=count;slot->valid=1u;
+    ++sAutoInserted;
+    sAutoReady=1;
+    return 1;
+}
+void PspNativeFighterPacket_AutoPrepare(const void *model,unsigned size) {
+    unsigned count;
+    if(!model||size<0x70u || size>16u*1024u*1024u)return;
+    count=PspAutoModel_Scan(model,size,auto_store,NULL);
+    ++sAutoModels;
+    if(sAutoModels<=6u)
+        Psp_Log("psp: automatic original BT3 model native prewarm: model=%u accepted=%u cache=%u (no files or manual packets; live bones/TEX0)\\n",
+                sAutoModels,count,sAutoInserted);
+}
 static int marker(const char *path) {
     FILE *f=fopen(path,"rb");
     if(!f)return 0;
@@ -51,18 +88,21 @@ const float *PspNativeFighterPacket_Resolve(const float *live,
             Psp_Log("psp: fighter VU source packet integration enabled: replay=%d capture=%d (original live bones/TEX0 retained)\n",
                     sLoadEnabled,sCaptureEnabled);
     }
-    if(!sLoadEnabled && !sCaptureEnabled)return live;
+    if(!sAutoReady && !sLoadEnabled && !sCaptureEnabled)return live;
     hash=PspFighterPacket_Fnv(src,bytes);
     for(i=0;i<FIGHTER_PACK_MEM_SLOTS;i++) {
         slot=&sSlots[i];
         if(slot->valid && slot->hash==hash && slot->count==count &&
            memcmp(slot->data,src,bytes)==0) {
-            ++sHit;return (const float *)slot->data;
+            ++sHit;
+            if(sAutoReady) ++sAutoHits;
+            return (const float *)slot->data;
         }
     }
     /* Never blacklist a pack that was loaded successfully. Unlike
        the previous permanent 96-source blacklist, this circular
        NEGATIVE cache permits new costumes/characters indefinitely. */
+    if(!sLoadEnabled && !sCaptureEnabled)return live;
     if(PspFighterNegative_Has(&sNegative,hash,count)) {
         ++sNegativeHit;
         return live;
@@ -116,7 +156,9 @@ const float *PspNativeFighterPacket_Resolve(const float *live,
     return live;
 }
 void PspNativeFighterPacket_Stats(void) {
-    if(sLoadEnabled<=0 && sCaptureEnabled<=0)return;
+    if(sLoadEnabled<=0 && sCaptureEnabled<=0 && !sAutoReady)return;
+    Psp_Log("psp: auto native BT3 model assets: models=%u prepared=%u candidate-hits=%u (RAM only, no user files)\\n",
+            sAutoModels,sAutoInserted,sAutoHits);
     Psp_Log("psp: native BT3 fighter packet replay: memory-hits=%u loaded=%u captured=%u misses=%u rejected=%u negative-hits=%u negative-size=%u (exact original vertex input, live bones/GS textures)\n",
             sHit,sLoaded,sWrote,sMiss,sRejected,sNegativeHit,sNegative.length);
 }
