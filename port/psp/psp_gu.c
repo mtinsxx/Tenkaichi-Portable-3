@@ -3731,6 +3731,8 @@ void Psp_GuStats(unsigned out[4]) {
     sGsAfailSecondPass=sGsAfailHudFallback=sFbPsmAliasRejected=0;
     Psp_Log("psp: native GS mirror scissor: fully-culled=%u pixel-candidates-skipped-k=%u (cumulative; PS2 GS test/scissor unchanged)\n",
             Gs_PspMirrorBoundsCulled(),Gs_PspMirrorCandidatesAvoidedK());
+    Psp_Log("psp: GS CPU mirror row spans: omitted-k-pixels=%u source-equivalent-blends=%u (cumulative, exact framebuffer semantics)\n",
+            Gs_PspMirrorRowSpanSkippedK(),Gs_PspMirrorSourceBlendAvoided());
     Psp_Log("psp: GS CPU mirror optimization: early-off-triangle=%u skipped-frame-reads=%u no-op-draws=%u invalid/offscreen-bounds=%u (cumulative; full GS interpolation/alpha/depth retained)\n",
             Gs_PspMirrorEarlyRejected(),Gs_PspMirrorDestReadSaved(),
             Gs_PspMirrorNoopDraws(),Gs_PspMirrorBadBounds());

@@ -32,6 +32,7 @@
 #ifdef PORT_PSP
 #include "gs_raster_bounds.h"
 #include "gs_mirror_fast.h"
+#include "gs_mirror_row_span.h"
 #endif
 
 #define SURF_W 1024
@@ -94,10 +95,14 @@ unsigned Gs_PspMirrorTrackedCount(void) {return sGsMirrorTrackedCount;}
 unsigned Gs_PspMirrorBoundsCulled(void) {return sGsMirrorBoundsCulled;}
 static unsigned sGsMirrorEarlyRejected,sGsMirrorNoopDraws,sGsMirrorBadBounds;
 static unsigned sGsMirrorDestReadSaved;
+static unsigned sGsMirrorSourceBlendAvoided;
+static unsigned long long sGsMirrorRowSpanSkipped;
 unsigned Gs_PspMirrorEarlyRejected(void) {return sGsMirrorEarlyRejected;}
 unsigned Gs_PspMirrorNoopDraws(void) {return sGsMirrorNoopDraws;}
 unsigned Gs_PspMirrorBadBounds(void) {return sGsMirrorBadBounds;}
 unsigned Gs_PspMirrorDestReadSaved(void) {return sGsMirrorDestReadSaved;}
+unsigned Gs_PspMirrorSourceBlendAvoided(void) {return sGsMirrorSourceBlendAvoided;}
+unsigned Gs_PspMirrorRowSpanSkippedK(void) {return (unsigned)(sGsMirrorRowSpanSkipped/1000u);}
 unsigned Gs_PspMirrorCandidatesAvoidedK(void) {
     return (unsigned)(sGsMirrorCandidatesAvoided/1000u);
 }
@@ -1112,7 +1117,7 @@ static void pixel(Target *sf, int ctx, int x, int y, uint32_t z, uint32_t src) {
        processing are unchanged. This applies to all software GS draws. */
     sr = src & 0xFF; sg = (src >> 8) & 0xFF; sb = (src >> 16) & 0xFF;
     out[0] = sr; out[1] = sg; out[2] = sb;
-    if ((pr >> 6) & 1) { /* blending: ((A - B) * C >> 7) + D */
+    if (((pr >> 6) & 1) && !GsMirror_BlendEqualsSource(al)) { /* blending: ((A - B) * C >> 7) + D */
         d = vram_rw(fbp, fbw, fpsm, (uint32_t)x, (uint32_t)y, 0, 0);
         if (Gs_PsmBits(fpsm) == 16) {
             d = (d & 31) << 3 | ((d >> 5) & 31) << 11 |
@@ -1133,7 +1138,10 @@ static void pixel(Target *sf, int ctx, int x, int y, uint32_t z, uint32_t src) {
         }
 #ifdef PORT_PSP
     } else {
-        if (sGsMirrorActive) ++sGsMirrorDestReadSaved;
+        if (sGsMirrorActive) {
+            ++sGsMirrorDestReadSaved;
+            if ((pr >> 6) & 1) ++sGsMirrorSourceBlendAvoided;
+        }
 #else
     } else {
 #endif
@@ -1280,6 +1288,18 @@ static void draw_triangle(Target *sf, int ctx, const Vertex *a, const Vertex *b,
 #endif
     for (y = (int)miny; y <= (int)maxy; y++) {
         for (x = (int)minx; x <= (int)maxx; x++) {
+#ifdef PORT_PSP
+            if (sGsMirrorActive && ((x - (int)minx) & 15) == 0) {
+                int end=x+15;
+                if(end>(int)maxx)end=(int)maxx;
+                if(GsMirror_RowSpanOutside(a->x,a->y,b->x,b->y,
+                                           c->x,c->y,area,x,end,y)) {
+                    sGsMirrorRowSpanSkipped+=(unsigned)(end-x+1);
+                    x=end; /* for increments once; EXACT original traversal */
+                    continue;
+                }
+            }
+#endif
             /* weights in double precision and results rounded, not truncated: with float weights that sum to just
                under 1 a flat triangle's depth came out one unit low on some pixels, and the fighters' black outline
                hull (drawn at almost the same depth as the body) showed through as speckles */
