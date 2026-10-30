@@ -122,7 +122,7 @@ extern void PspNativeFighterPacket_Stats(void);
  * the PSP GU draw-array vertex count is still safely below 65,535.
  * Changes of texture, alpha, scissor, framebuffer and primitive type
  * continue to flush in their original submission order. */
-#define MAX_QUEUE 12288      /* vertices per identical-state batch */
+#define MAX_QUEUE PSP_GU_VERTEX_BATCH_VERTICES
 #define MAX_TARGETS 6
 /* Maximum 1.5 MiB main RAM reserved for loss-limited GS feedback
  * snapshots. The PSP homebrew process must leave memory for GS VRAM,
