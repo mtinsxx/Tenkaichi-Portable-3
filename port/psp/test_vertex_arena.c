@@ -32,6 +32,14 @@ int main(void) {
     assert(!PspGuVertexArena_CanReuse(0u));
     assert(PspGuVertexArena_CanReuse(1u));
     /* Real code fences the GE before the cursor is recycled. */
-    assert(PSP_GU_VERTEX_FRAME_VERTICES>=8192u);
+    assert(PSP_GU_VERTEX_FRAME_VERTICES>=PSP_GU_VERTEX_BATCH_VERTICES);
+    assert(PSP_GU_VERTEX_BATCH_VERTICES==12288u);
+    assert(PSP_GU_VERTEX_BATCH_VERTICES<65536u);
+    assert(PSP_GU_VERTEX_BATCH_VERTICES%3u==0u);
+    assert(PspGuVertexArena_Fits(0u,0u,
+           PSP_GU_VERTEX_BATCH_VERTICES,PSP_GU_VERTEX_FRAME_VERTICES));
+    assert(!PspGuVertexArena_Fits(
+           PSP_GU_VERTEX_FRAME_VERTICES-PSP_GU_VERTEX_BATCH_VERTICES+1u,
+           0u,PSP_GU_VERTEX_BATCH_VERTICES,PSP_GU_VERTEX_FRAME_VERTICES));
     return 0;
 }
