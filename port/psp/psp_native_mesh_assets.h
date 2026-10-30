@@ -12,7 +12,7 @@
 enum { TP3_M3P_HEADER=16, TP3_M3P_VERTEX_BYTES=24,
        TP3_A3P_HEADER=16, TP3_A3P_MATRIX_BYTES=48,
        TP3_MAX_NATIVE_VERTICES=8192, TP3_MAX_NATIVE_INDICES=16384,
-       TP3_MAX_NATIVE_BONES=32, TP3_MAX_NATIVE_FRAMES=128 };
+       TP3_MAX_NATIVE_BONES=71, TP3_MAX_NATIVE_FRAMES=128 };
 typedef struct PspNativeMeshView {
     const uint8_t *vertices,*indices;
     uint32_t vertexCount,indexCount;
