@@ -5,7 +5,13 @@
 #include "sys/heap.h"
 #include "sys/gfxm_e.h"
 #ifdef PORT_PSP
-#include "battle/btl_obj.h"
+/* Use only BtlResSlot.file[0]'s first two fields, known from
+ * include/battle/btl_obj.h. Including that header here introduces
+ * conflicting legacy declarations for ObjMdlPart/BtlObjPoolE0. */
+typedef struct PspBt3ModelResourceView {
+    void *buf;
+    s32 size;
+} PspBt3ModelResourceView;
 extern void PspNativeFighterPacket_AutoPrepare(const void *,unsigned);
 #endif
 
@@ -180,10 +186,11 @@ void BtlObjMdl_BindFiles(ObjMdlObj *obj) {
        AFS indices and install custom .f3p packs. No save I/O or edits
        to the model; unsupported streams use existing VU1 behavior. */
     if (res && mdl->file) {
-        const BtlResSlot *slot = (const BtlResSlot *)res;
-        if(slot->file[0].buf==mdl->file && slot->file[0].size>0)
+        const PspBt3ModelResourceView *file =
+            (const PspBt3ModelResourceView *)res;
+        if(file->buf==mdl->file && file->size>0)
             PspNativeFighterPacket_AutoPrepare(
-                mdl->file,(unsigned)slot->file[0].size);
+                mdl->file,(unsigned)file->size);
     }
 #endif
     mdl->meshes = (ObjMdlMesh *)((u8 *)mdl->file + mdl->file->meshOfs);
