@@ -80,6 +80,14 @@ static uint8_t sGsMirrorTracked[TP3_GS_VRAM_PAGES];
 static uint32_t sGsMirrorPageStamp[TP3_GS_VRAM_PAGES];
 static uint32_t sGsMirrorDrawStamp;
 static int sGsMirrorActive;
+extern unsigned long long Psp_TimeUs(void);
+static unsigned long long sGsMirrorCpuTotalUs,sGsMirrorCpuLastReportUs;
+unsigned Gs_PspMirrorTakeCpuMs(void) {
+    unsigned long long now=sGsMirrorCpuTotalUs;
+    unsigned ms=(unsigned)((now-sGsMirrorCpuLastReportUs)/1000ull);
+    sGsMirrorCpuLastReportUs=now;
+    return ms;
+}
 static unsigned sGsMirrorDraws,sGsMirrorDirtyPages,sGsMirrorTrackedCount;
 static unsigned sGsMirrorBoundsCulled;
 static unsigned long long sGsMirrorCandidatesAvoided;
@@ -1394,6 +1402,9 @@ void Gs_PspMirrorDraw(int type,int ctx,const GsVertex *v) {
         sGsMirrorDrawStamp=1u;
     }
     sGsMirrorActive=1;
+    /* Direct wall-clock accounting, not a x16/x32 sample estimate:
+       confirms whether PS2 32-bit GS mirror is consuming the chain. */
+    unsigned long long mirrorStartedUs=Psp_TimeUs();
     mirrorTarget.fbp=fbp;
     mirrorTarget.drawn=0;
     switch(type) {
@@ -1405,6 +1416,7 @@ void Gs_PspMirrorDraw(int type,int ctx,const GsVertex *v) {
     default: break;
     }
     sGsMirrorActive=0;
+    sGsMirrorCpuTotalUs+=Psp_TimeUs()-mirrorStartedUs;
     ++sGsMirrorDraws;
     /* Invalidate the per-draw hot texture reuse table, even if a pass
        writes only Z/alpha bytes or a framebuffer's upper byte. */
