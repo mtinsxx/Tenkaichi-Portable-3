@@ -337,6 +337,9 @@ static uint32_t sDiagZMin = 0xFFFFFFFFu, sDiagZMax;
 /* Low-overhead wall-clock profiler. Intervals are reported by Psp_VBlank()
    every ~2 seconds, not per draw. This does not bypass any rendering path. */
 static unsigned long long sProfGameNs, sProfChainNs;
+static unsigned long long sProfChainWorstNs;
+static unsigned sProfChainWorstFrame,sProfChainOver16ms;
+static unsigned sProfChainOver100ms,sProfChainOver1000ms;
 static unsigned long long sProfKeySampleUs, sProfDecodeUs;
 static unsigned long long sProfGeSyncUs, sProfVblankUs;
 static unsigned sProfChainCount, sProfKeyCalls, sProfKeySamples;
@@ -360,6 +363,16 @@ static unsigned sProfBatch8192Plus,sProfBatch4096Plus,sProfBatchTiny;
 void Psp_GuProfileChainNs(unsigned long long ns) {
     sProfChainNs += ns;
     ++sProfChainCount;
+    /* External caller measures one entire GIF/VIF/GS chain, so these
+     * are DIRECT timings, including skipped and VU1-native paths.
+     * No extra clock read or profiler overhead in the chain. */
+    if (ns>sProfChainWorstNs) {
+        sProfChainWorstNs=ns;
+        sProfChainWorstFrame=sFrame;
+    }
+    if (ns>=16000000ull) ++sProfChainOver16ms;
+    if (ns>=100000000ull) ++sProfChainOver100ms;
+    if (ns>=1000000000ull) ++sProfChainOver1000ms;
 }
 
 void Psp_GuProfileGameNs(unsigned long long ns) {
@@ -3756,6 +3769,12 @@ void Psp_GuStats(unsigned out[4]) {
     /* Sum only completed samples from this ~2-second window.
        These values partition work, not all of it; chain includes submit,
        GPU sync, vsync, and the texture work listed as subcomponents. */
+    Psp_Log("psp: PROFILE full GS chain worst=%u ms frame=%u slower-than-16ms=%u slower-than-100ms=%u slower-than-1000ms=%u (exact per-chain CPU wall time; includes GIF/VIF/texture/GU submit)\n",
+            (unsigned)(sProfChainWorstNs/1000000ull),sProfChainWorstFrame,
+            sProfChainOver16ms,sProfChainOver100ms,sProfChainOver1000ms);
+    sProfChainWorstNs=0;
+    sProfChainWorstFrame=sProfChainOver16ms=sProfChainOver100ms=
+        sProfChainOver1000ms=0;
     Psp_Log("psp: PROFILE interval: gameCPU=%u ms, GSchain=%u ms (%u chains), GUfinishSync=%u ms, VBlankWait=%u ms, frameEnds=%u\n",
             (unsigned)(sProfGameNs / 1000000ull),
             (unsigned)(sProfChainNs / 1000000ull),
