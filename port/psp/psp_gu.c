@@ -375,6 +375,7 @@ static uint32_t sFbMissingLastProducerFbp,sFbMissingLastProducerPsm;
 static uint32_t sFbMissingLastTextureTbp,sFbMissingLastTexturePsm;
 static unsigned sGsUploadSnapshot, sGsUploadUnsupported;
 static unsigned sStageCompositions, sStageComposeRejected, sStageTagged;
+static unsigned sStageSnapshotComposed, sStageSnapshotMissing;
 static unsigned sStageFinalRecordUpdates, sNativeFastGpuWrites;
 static unsigned sStageRejectOffscreen,sStageRejectSame,sStageRejectStale;
 static unsigned sStageRejectOwner,sStageRejectUnready,sStageRejectAlready,sStageRejectOther;
@@ -2584,7 +2585,7 @@ static void Psp_StageRecordDraw(int ctx) {
 static void Psp_StageComposeBeforeFighter(int ctx) {
     uintptr_t dst,src;
     unsigned i;
-    int sourceReady=0,ownerValid=1,screenDest,already;
+    int sourceReady=0,ownerValid=1,screenDest,already,fromSnapshot=0;
     if (!sStageImage.valid || ctx<0 || ctx>1) return;
     dst=(uintptr_t)target_color((uint32_t)(gGs.frame[ctx]&0x1FFu));
     src=sStageImage.backing;
@@ -2592,22 +2593,50 @@ static void Psp_StageComposeBeforeFighter(int ctx) {
                  dst==(uintptr_t)(sVram+FB1_OFF);
     already=sStageComposeFrame==sFrame && sStageComposeDest==dst;
     /* The physical WORK slot can be reassigned to another logical GS
-       target; never copy if the stage no longer owns that backing. */
-    if(src==(uintptr_t)(sVram+WORK_OFF) ||
-       src==(uintptr_t)(sVram+WORK2_OFF)) {
+       target. Copying its NEW owner as the stage is forbidden. */
+    if(psp_is_work((const void *)src)) {
         int slot=psp_work_slot((void *)src);
         ownerValid = slot>=0 &&
                      sWorkOwnerFbp[slot]==sStageImage.fbp;
     }
     for(i=0u;i<MAX_TARGETS;i++) {
-        const Target *t=&sTargets[i];
-        if(t->used && t->fbp==sStageImage.fbp &&
-           (uintptr_t)t->color==src && t->rendered &&
-           t->gen==sStageImage.gen &&
-           t->snapVersion.written==sStageImage.written) {
+        Target *t=&sTargets[i];
+        int versionMatches,physicalReady;
+        if(!t->used || t->fbp!=sStageImage.fbp)continue;
+        versionMatches=t->gen==sStageImage.gen &&
+                       t->snapVersion.written==sStageImage.written;
+        /* Physical stage must still reside at the EXACT backing
+           recorded for these pixels. A screen swap may remap the
+           logical FBP before fighters start; its valid RAM snapshot
+           is still usable without treating the new backing as old. */
+        physicalReady=versionMatches &&
+                      (uintptr_t)t->color==src &&
+                      t->rendered && ownerValid;
+        if(physicalReady) {
             sourceReady=1;
             break;
         }
+        /* Before WORK was reassigned, snapshot_target() queued the
+           completed stage image into padded RAM. The original PSP
+           backing now contains a different logical GS target, so
+           source it from that immutable versioned RAM copy instead.
+           GU transfer order is preserved; no synchronous CPU readback
+           and no 5551->32-bit PS2 reconstruction is attempted. */
+        if(PspStageCompose_UseSnapshot(
+                sStageImage.written,t->snapVersion.written,
+                versionMatches,
+                t->snapshot && PspGsFb_SampleValid(
+                    &t->snapVersion,sStageImage.gen),
+                physicalReady,ownerValid)) {
+            src=(uintptr_t)t->snapshot;
+            t->snapshotSampledFrame=sFrame;
+            ownerValid=1;
+            sourceReady=1;
+            fromSnapshot=1;
+        } else if (!ownerValid || !t->rendered) {
+            ++sStageSnapshotMissing;
+        }
+        break;
     }
     if(!PspStageCompose_ShouldCopy(sFrame,sStageImage.frame,
         sourceReady ? sStageImage.written : 0u,sStageImage.written,
@@ -2634,6 +2663,7 @@ static void Psp_StageComposeBeforeFighter(int ctx) {
     sStageComposeFrame=sFrame;
     sStageComposeDest=dst;
     ++sStageCompositions;
+    if (fromSnapshot) ++sStageSnapshotComposed;
 }
 
 /* Reused by the stage and fighter native VU1 renderers. Defined after
@@ -3768,6 +3798,8 @@ void Psp_GuStats(unsigned out[4]) {
     Psp_Log("psp: GS CPU mirror optimization: early-off-triangle=%u skipped-frame-reads=%u no-op-draws=%u invalid/offscreen-bounds=%u (cumulative; full GS interpolation/alpha/depth retained)\n",
             Gs_PspMirrorEarlyRejected(),Gs_PspMirrorDestReadSaved(),
             Gs_PspMirrorNoopDraws(),Gs_PspMirrorBadBounds());
+    Psp_Log("psp: GS exact mirror CPU measured elapsed=%u ms/interval (full duration of pixel raster; no sampled extrapolation)\n",
+            Gs_PspMirrorTakeCpuMs());
     Psp_Log("psp: exact GS VRAM feedback mirror: tracked-fbps=%u CPU-rasterized-draws=%u dirty-8KB-pages=%u (PSMCT32 <-> PSMT8 share original 4MB GS bytes)\n",
             Gs_PspMirrorTrackedCount(),Gs_PspMirrorDrawCount(),
             Gs_PspMirrorDirtyPageCount());
@@ -3778,6 +3810,9 @@ void Psp_GuStats(unsigned out[4]) {
     sFbMissingCrossPsmReadback=sFbMissingCrossPsmIndexed=0;
     Psp_Log("psp: stage-to-fighter background copy: staged=%u copied=%u guarded-skip=%u (native VU1, same/previous frame, GE 5551)\n",
             sStageTagged,sStageCompositions,sStageComposeRejected);
+    Psp_Log("psp: GS stage owner recovery: snapshot-composed=%u no-matching-snapshot=%u (ordered GU colour, never PS2 cross-PSM)\n",
+            sStageSnapshotComposed,sStageSnapshotMissing);
+    sStageSnapshotComposed=sStageSnapshotMissing=0;
     sStageTagged=sStageCompositions=sStageComposeRejected=0;
     Psp_Log("psp: stage compositing rejects: offscreen=%u same-surface=%u stale=%u owner-lost=%u invalid-source=%u already-copied=%u other=%u\n",
          sStageRejectOffscreen,sStageRejectSame,sStageRejectStale,

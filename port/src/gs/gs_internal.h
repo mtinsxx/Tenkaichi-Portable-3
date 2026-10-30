@@ -45,6 +45,7 @@ extern uint32_t gGsPspTextureEpoch;
 void Gs_PspMirrorEnableFbp(uint32_t fbp);
 void Gs_PspMirrorDraw(int type,int ctx,const GsVertex *v);
 unsigned Gs_PspMirrorDrawCount(void);
+unsigned Gs_PspMirrorTakeCpuMs(void);
 unsigned Gs_PspMirrorDirtyPageCount(void);
 unsigned Gs_PspMirrorTrackedCount(void);
 /* Work avoided by exact PS2 GS scissor pre-culling of CPU mirror draws. */
