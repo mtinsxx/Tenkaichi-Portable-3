@@ -22,6 +22,23 @@ static inline int PspStageCompose_NeedsFinalRecord(
                            written!=previousWritten);
 }
 
+/* A stage framebuffer may lose ownership of a shared PSP WORK backing
+ * before the first fighter draw. A completed 5551 snapshot already
+ * queued in the GE list is a valid *visual* source if its version and
+ * originating GS generation still match the stage record. Never
+ * resurrect an older scene after another stage draw changed the image. */
+static inline int PspStageCompose_UseSnapshot(unsigned recordedVersion,
+                                               unsigned actualVersion,
+                                               int matchingGeneration,
+                                               int savedValid,
+                                               int physicalReady,
+                                               int ownerValid) {
+    return recordedVersion != 0u &&
+           recordedVersion == actualVersion &&
+           matchingGeneration && savedValid &&
+           (!physicalReady || !ownerValid);
+}
+
 static inline int PspStageCompose_ShouldCopy(unsigned now,
                                              unsigned stageFrame,
                                              unsigned stageWritten,
