@@ -1131,7 +1131,12 @@ static void pixel(Target *sf, int ctx, int x, int y, uint32_t z, uint32_t src) {
             int v = (((a - b) * (int)c) >> 7) + dd;
             out[i] = v < 0 ? 0 : v > 255 ? 255 : (uint32_t)v;
         }
+#ifdef PORT_PSP
+    } else if (sGsMirrorActive) {
+        ++sGsMirrorDestReadSaved;
+#else
     }
+#endif
     if (write_rgb) {
         /* FRAME.FBMSK: bits that are set are NOT written. The game depends on it (it moves single channels
            between the depth buffer, the frame's alpha byte and work buffers, sometimes through a 16-bit view
