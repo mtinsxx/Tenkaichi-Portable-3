@@ -117,7 +117,12 @@ extern void PspNativeFighterPacket_Stats(void);
 #define MAX_TEX_BYTES (TEX_SIZE - 4 * 1024)
 /* More textures remain decoded in GE-readable main RAM when VRAM is full. */
 #define MAX_RAM_TEX_BYTES (10u * 1024u * 1024u)
-#define MAX_QUEUE 8192       /* vertices of one batch */
+/* Same immutable vertex arena, larger GE draw groups when *identical*
+ * GS state is already batched. 12,288 vertices = 4,096 triangles max;
+ * the PSP GU draw-array vertex count is still safely below 65,535.
+ * Changes of texture, alpha, scissor, framebuffer and primitive type
+ * continue to flush in their original submission order. */
+#define MAX_QUEUE 12288      /* vertices per identical-state batch */
 #define MAX_TARGETS 6
 /* Maximum 1.5 MiB main RAM reserved for loss-limited GS feedback
  * snapshots. The PSP homebrew process must leave memory for GS VRAM,
@@ -340,6 +345,17 @@ static unsigned sProfDecodeCount, sProfFrameEnds;
    Split renderer time from the surrounding GIF/VIF command interpreter. */
 static unsigned sProfDrawCalls, sProfDrawSamples;
 static unsigned long long sProfDrawSampleUs;
+/* Nested low-overhead 1-in-16 breakdown of completed regular GS draws.
+ * Texture includes framebuffer lookup, GS cache/CLUT, decode when needed;
+ * setup includes target + state; mirror retains full PS2 4MiB semantics;
+ * vertices includes PSP transform and copy into immutable GU arena.
+ * Fast native VU1 batch path is tracked separately, not mislabeled. */
+static unsigned long long sProfDrawTextureUs,sProfDrawSetupUs;
+static unsigned long long sProfDrawMirrorUs,sProfDrawVertexUs;
+static unsigned sProfCompletedDraws;
+static unsigned long long sProfBatchSampleUs;
+static unsigned sProfBatchCalls,sProfBatchSamples,sProfBatchMaxVerts;
+static unsigned sProfBatch8192Plus,sProfBatch4096Plus,sProfBatchTiny;
 
 void Psp_GuProfileChainNs(unsigned long long ns) {
     sProfChainNs += ns;
@@ -1822,7 +1838,17 @@ static int gs_atst_to_gu(unsigned atst) {
     }
 }
 static void flush(void) {
+    unsigned vertexCount;
+    int sample;
+    unsigned long long begin=0;
     if (sVbCount == 0) return;
+    vertexCount=(unsigned)sVbCount;
+    if (vertexCount>sProfBatchMaxVerts) sProfBatchMaxVerts=vertexCount;
+    if (vertexCount>=8192u) ++sProfBatch8192Plus;
+    else if(vertexCount>=4096u) ++sProfBatch4096Plus;
+    else if(vertexCount<=6u) ++sProfBatchTiny;
+    sample=((++sProfBatchCalls & 15u)==0u);
+    if(sample) begin=Psp_TimeUs();
     state_apply();
     sceKernelDcacheWritebackRange(sVb, (size_t)sVbCount * sizeof(Vtx));
     sceGuDrawArray(sVbMode, GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_2D, sVbCount, NULL, sVb);
@@ -1851,6 +1877,10 @@ static void flush(void) {
     sVb=sVbArena+sVbCursor;
     sVbCount = 0;
     sBatches++;
+    if(sample) {
+        sProfBatchSampleUs+=Psp_TimeUs()-begin;
+        ++sProfBatchSamples;
+    }
 }
 
 /* Reuse arena memory only once the previous GE list has completed.
@@ -1914,6 +1944,8 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
                                ((uint32_t)v[1].b << 16) | ((uint32_t)v[1].a << 24)));
     int profSample = ((++sProfDrawCalls & 15u) == 0);
     unsigned long long profStart = profSample ? Psp_TimeUs() : 0;
+    unsigned long long profTexBegin=0,profTexEnd=0;
+    unsigned long long profMirrorBegin=0,profMirrorEnd=0;
 
     sLastDrawStaticSkip=PSP_GS_STATIC_NONE;
     if (!sReady) {
@@ -1989,6 +2021,7 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
             return;
         }
     }
+    if (profSample) profTexBegin=Psp_TimeUs();
     if (tme) {
         uint32_t tpsm = (uint32_t)((t0 >> 20) & 0x3F), tbp = (uint32_t)(t0 & 0x3FFF);
         /* Legacy framebuffer/depth-as-texture passes stay skipped.
@@ -2161,6 +2194,10 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
             us = PspGsFb_PhysicalU(1.f);
             vs = PspGsFb_PhysicalV(1.f);
         }
+    }
+    if (profSample) {
+        profTexEnd=Psp_TimeUs();
+        sProfDrawTextureUs+=profTexEnd-profTexBegin;
     }
     targetIndex = target_get((uint32_t)fbp, 1);
     if (targetIndex < 0) {
@@ -2470,7 +2507,15 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
        software GS image before the PSP GE writes its separate 5551
        framebuffer. This maintains draw order and correct read-before-write
        when the next PS2 draw samples the producer as PSMT8. */
+    if (profSample) {
+        profMirrorBegin=Psp_TimeUs();
+        sProfDrawSetupUs+=profMirrorBegin-profTexEnd;
+    }
     Gs_PspMirrorDraw(type,ctx,v);
+    if (profSample) {
+        profMirrorEnd=Psp_TimeUs();
+        sProfDrawMirrorUs+=profMirrorEnd-profMirrorBegin;
+    }
     sTargets[targetIndex].gen=gGsPageGen[(uint32_t)fbp & 511u];
     d = &sVb[sVbCount];
     sVbMode = mode;
@@ -2559,6 +2604,8 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
         flush();
     }
     if (profSample) {
+        sProfDrawVertexUs+=Psp_TimeUs()-profMirrorEnd;
+        ++sProfCompletedDraws;
         sProfDrawSampleUs += Psp_TimeUs() - profStart;
         ++sProfDrawSamples;
     }
@@ -3694,6 +3741,15 @@ void Psp_GuStats(unsigned out[4]) {
     Psp_Log("psp: native PSP GU ordered passes: stage-triangles=%u fighter-triangles=%u sprites=%u transition-barriers=%u (original GS order retained)\n",
             sGuNativePassStage,sGuNativePassFighter,sGuNativePassSprites,sGuNativePassBarriers);
     sGuNativePassStage=sGuNativePassFighter=sGuNativePassSprites=sGuNativePassBarriers=0;
+    Psp_Log("psp: GS native GU triangle batch: max-vertices=%u >=8192=%u >=4096=%u tiny<=6=%u all-batches=%u cap=%u (not additional geometry, original order)\n",
+            sProfBatchMaxVerts,sProfBatch8192Plus,sProfBatch4096Plus,
+            sProfBatchTiny,sProfBatchCalls,(unsigned)MAX_QUEUE);
+    Psp_Log("psp: PROFILE GU state+submit ~= %u ms (%u/%u batches sampled x16, includes scissor/texture bind and vertex D-cache flush)\n",
+            (unsigned)(sProfBatchSampleUs*16ull/1000ull),
+            sProfBatchSamples,sProfBatchCalls);
+    sProfBatchMaxVerts=sProfBatch8192Plus=sProfBatch4096Plus=sProfBatchTiny=0;
+    sProfBatchCalls=sProfBatchSamples=0;
+    sProfBatchSampleUs=0;
     Psp_Log("psp: GU state batching: %u batches, %u changed states, %u draw-target switches\n",
             sGuStateCalls, sGuStateChanges, sGuTargetChanges);
     sGuStateCalls = sGuStateChanges = sGuTargetChanges = 0;
@@ -3714,6 +3770,14 @@ void Psp_GuStats(unsigned out[4]) {
     sProfGeSyncUs = sProfVblankUs = 0;
     sProfChainCount = sProfKeyCalls = sProfKeySamples = 0;
     sProfDecodeCount = sProfFrameEnds = 0;
+    Psp_Log("psp: PROFILE GS completed draw phases ~= texture/FB lookup %u ms, target+state %u ms, exact-VRAM mirror %u ms, vertex+queue %u ms (%u completed samples x16; nested inside GS draws; skips and native VU1 fast-path separately)\n",
+            (unsigned)(sProfDrawTextureUs*16ull/1000ull),
+            (unsigned)(sProfDrawSetupUs*16ull/1000ull),
+            (unsigned)(sProfDrawMirrorUs*16ull/1000ull),
+            (unsigned)(sProfDrawVertexUs*16ull/1000ull),
+            sProfCompletedDraws);
+    sProfDrawTextureUs=sProfDrawSetupUs=sProfDrawMirrorUs=sProfDrawVertexUs=0;
+    sProfCompletedDraws=0;
     Psp_Log("psp: PROFILE GS draws ~= %u ms (%u calls, %u sampled x16)\n",
             (unsigned)(sProfDrawSampleUs * 16ull / 1000ull),
             sProfDrawCalls, sProfDrawSamples);
