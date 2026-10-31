@@ -116,6 +116,12 @@ jobs:
           gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/psp port/psp/test_fb_lookup_policy.c -o /tmp/tp3-fb-read
           /tmp/tp3-fb-read
 
+      - name: Test early bounded PSP RGB5551 framebuffer snapshot reservation
+        run: |
+          gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/psp \
+            port/psp/test_gs_fb_snapshot_pool.c -o /tmp/tp3-snapshot-pool
+          /tmp/tp3-snapshot-pool
+
       - name: Test PSP framebuffer snapshot pool and texture cache compaction
         run: |
           gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/psp port/psp/test_fb_snapshot_recycle.c -o /tmp/tp3-fb-pool
