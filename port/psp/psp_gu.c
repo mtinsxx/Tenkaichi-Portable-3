@@ -4041,9 +4041,9 @@ void Psp_GuStats(unsigned out[4]) {
             Gs_PspMirrorNoopDraws(),Gs_PspMirrorBadBounds());
     Psp_Log("psp: GS exact mirror CPU measured elapsed=%u ms/interval (full duration of pixel raster; no sampled extrapolation)\n",
             Gs_PspMirrorTakeCpuMs());
-    Psp_Log("psp: exact GS mirror CLUT: prepared-draws=%u per-pixel-palette-read-bypasses=%u invalidated-by-live-PS2-write=%u (cumulative; PS2 palette/TEXA, 4MiB cross-PSM feedback unchanged)\n",
+    Psp_Log("psp: exact GS mirror CLUT: prepared-draws=%u per-pixel-palette-read-bypasses=%u invalidated-by-live-PS2-write=%u small-primitive-skip=%u (cumulative; PS2 palette/TEXA, 4MiB cross-PSM feedback unchanged)\n",
             Gs_PspMirrorClutPrimed(),Gs_PspMirrorClutHits(),
-            Gs_PspMirrorClutAliased());
+            Gs_PspMirrorClutAliased(),Gs_PspMirrorClutSmallSkipped());
     Psp_Log("psp: GS exact mirror changed-word coherence: unchanged-writes=%u changed-writes=%u identical-draws=%u (cumulative, full PS2 32-bit GS bytes)\n",
             Gs_PspMirrorUnchangedWordWrites(),Gs_PspMirrorChangedWordWrites(),
             Gs_PspMirrorIdenticalDraws());
