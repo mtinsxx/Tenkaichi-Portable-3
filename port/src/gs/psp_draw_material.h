@@ -42,4 +42,28 @@ static inline int PspDrawMaterial_Wrap(int value,unsigned size,
     if(mode==2u)return value<lo?lo:value>hi?hi:value;
     return (value&lo)|hi;
 }
+/* Native per-draw framebuffer/depth state. Keep the exact GS
+ * register values alongside their decoded fields to retain alpha,
+ * Z, DATE and FBMSK logic until each has a proven GU equivalent. */
+typedef struct PspDrawPixelState {
+    uint64_t test,alpha,zbuf,prim,scissor,frame;
+    uint32_t fbp,fbw,fpsm,zbp,zpsm,zmax;
+    int writeZ;
+} PspDrawPixelState;
+static inline PspDrawPixelState PspDrawPixelState_Decode(
+    uint64_t test,uint64_t alpha,uint64_t zbuf,uint64_t prim,
+    uint64_t scissor,uint64_t frame,unsigned depthBits) {
+    PspDrawPixelState p;
+    p.test=test;p.alpha=alpha;p.zbuf=zbuf;
+    p.prim=prim;p.scissor=scissor;p.frame=frame;
+    p.fbp=(uint32_t)(frame&0x1ffu)<<5u;
+    p.fbw=(uint32_t)((frame>>16)&0x3fu);
+    p.fpsm=(uint32_t)((frame>>24)&0x3fu);
+    p.zbp=(uint32_t)(zbuf&0x1ffu)<<5u;
+    p.zpsm=0x30u|(uint32_t)((zbuf>>24)&15u);
+    p.zmax=depthBits==32u?UINT32_MAX:
+           depthBits==24u?0x00ffffffu:0xffffu;
+    p.writeZ=((zbuf>>32)&1u)==0u;
+    return p;
+}
 #endif
