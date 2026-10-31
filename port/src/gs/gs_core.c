@@ -36,6 +36,7 @@
 #include "gs_mirror_scanline.h"
 #include "gs_mirror_edge_row.h"
 #include "gs_mirror_clut_cache.h"
+#include "psp_draw_material.h"
 #include "gs_mirror_word_delta.h"
 #endif
 
@@ -83,6 +84,10 @@ static uint8_t sGsMirrorTracked[TP3_GS_VRAM_PAGES];
 static uint32_t sGsMirrorPageStamp[TP3_GS_VRAM_PAGES];
 static uint32_t sGsMirrorDrawStamp;
 static int sGsMirrorActive;
+static PspDrawMaterial sPspDrawMaterial;
+static unsigned sPspMaterialDraws,sPspMaterialTexels;
+unsigned Gs_PspMaterialDraws(void){return sPspMaterialDraws;}
+unsigned Gs_PspMaterialTexels(void){return sPspMaterialTexels;}
 /* Exact 32-bit GS CSM1 palette, never an RGB5551 approximation.
  * A changed GS word in any source page invalidates its draw-local
  * cache BEFORE the next texel fetch sees the updated palette. */
@@ -1116,7 +1121,37 @@ static void Gs_PspMirrorClutBegin(int ctx,int type,const GsVertex *v) {
 }
 #endif
 
+
+#ifdef PORT_PSP
+/* The PSP-native feedback material is decoded once at the start of
+ * each draw; only byte-exact PS2 texture samples still use vram_rw.
+ * Unlike the desktop reference renderer, there are no per-pixel
+ * 64-bit TEX0/CLAMP register extractions or repeated mode decoding. */
+static inline uint32_t psp_mirror_texel(int u,int v) {
+    const PspDrawMaterial *m=&sPspDrawMaterial;
+    uint32_t c,cachedColor;
+    int bits=Gs_PsmBits(m->psm);
+    u=PspDrawMaterial_Wrap(u,m->tw,m->wms,m->minu,m->maxu);
+    v=PspDrawMaterial_Wrap(v,m->th,m->wmt,m->minv,m->maxv);
+    c=vram_rw(m->tbp,m->tbw,m->psm,(uint32_t)u,(uint32_t)v,0,0);
+    ++sPspMaterialTexels;
+    if(bits>8)return Gs_Expand(c,m->psm);
+    if(GsMirrorClut_Lookup(&sGsMirrorClut,c,&cachedColor)) {
+        ++sGsMirrorClutHits;
+        return cachedColor;
+    }
+    if(bits==8) {
+        c=(c&0xe7u)|((c&8u)<<1)|((c&0x10u)>>1);
+        return Gs_Expand(vram_rw(m->cbp,1,m->cpsm,c&15u,c>>4,0,0),m->cpsm);
+    }
+    return Gs_Expand(vram_rw(m->cbp,1,m->cpsm,c&7u,c>>3,0,0),m->cpsm);
+}
+#endif
+
 static uint32_t texel(int ctx, int u, int v) {
+#ifdef PORT_PSP
+    if(sGsMirrorActive)return psp_mirror_texel(u,v);
+#endif
     uint64_t t0 = gs.tex0[ctx], cl = gs.clamp[ctx];
     uint32_t tbp = t0 & 0x3FFF, tbw = (t0 >> 14) & 0x3F, psm = (t0 >> 20) & 0x3F, tw = 1u << ((t0 >> 26) & 15), th = 1u << ((t0 >> 30) & 15);
     uint32_t cbp = (t0 >> 37) & 0x3FFF, cpsm = (t0 >> 51) & 15, csa = (t0 >> 56) & 31;
@@ -1295,15 +1330,30 @@ static uint32_t shade(int ctx, uint32_t vc, float s, float t, float q, int u, in
     uint64_t pr = gs.prim, t0 = gs.tex0[ctx];
     uint32_t tc, c[4], out = 0, tfx = (t0 >> 35) & 3, tcc = (t0 >> 34) & 1;
     int i;
-
-    if (!((pr >> 4) & 1)) {
-        return vc;
-    }
-    if ((pr >> 8) & 1) {
-        tc = texel(ctx, u >> 4, v >> 4);
-    } else {
-        float w = q != 0.0f ? 1.0f / q : 1.0f;
-        tc = texel(ctx, (int)(s * w * (float)(1u << ((t0 >> 26) & 15))), (int)(t * w * (float)(1u << ((t0 >> 30) & 15))));
+#ifdef PORT_PSP
+    if(sGsMirrorActive) {
+        const PspDrawMaterial *m=&sPspDrawMaterial;
+        if(!m->textureEnabled)return vc;
+        tfx=m->tfx;tcc=m->tcc;
+        if(m->fst) {
+            tc=psp_mirror_texel(u>>4,v>>4);
+        } else {
+            float w=q!=0.0f ? 1.0f/q : 1.0f;
+            tc=psp_mirror_texel((int)(s*w*(float)m->tw),
+                                (int)(t*w*(float)m->th));
+        }
+    } else
+#endif
+    {
+        if (!((pr >> 4) & 1)) {
+            return vc;
+        }
+        if ((pr >> 8) & 1) {
+            tc = texel(ctx, u >> 4, v >> 4);
+        } else {
+            float w = q != 0.0f ? 1.0f / q : 1.0f;
+            tc = texel(ctx, (int)(s * w * (float)(1u << ((t0 >> 26) & 15))), (int)(t * w * (float)(1u << ((t0 >> 30) & 15))));
+        }
     }
     for (i = 0; i < 3; i++) {
         uint32_t cv = (vc >> (8 * i)) & 0xFF, ct = (tc >> (8 * i)) & 0xFF, av = vc >> 24;
@@ -1528,6 +1578,9 @@ void Gs_PspMirrorDraw(int type,int ctx,const GsVertex *v) {
         memset(sGsMirrorPageStamp,0,sizeof(sGsMirrorPageStamp));
         sGsMirrorDrawStamp=1u;
     }
+    sPspDrawMaterial=PspDrawMaterial_Decode(gs.tex0[ctx],
+                              gs.clamp[ctx],gs.prim);
+    ++sPspMaterialDraws;
     sGsMirrorActive=1;
     Gs_PspMirrorClutBegin(ctx,type,v);
     unsigned dirtyBefore=sGsMirrorDirtyPages;
