@@ -37,6 +37,7 @@
 #include "gs_mirror_edge_row.h"
 #include "gs_mirror_clut_cache.h"
 #include "psp_draw_material.h"
+#include "psp_mirror_depth_only.h"
 #include "gs_mirror_word_delta.h"
 #endif
 
@@ -86,6 +87,11 @@ static uint32_t sGsMirrorDrawStamp;
 static int sGsMirrorActive;
 static PspDrawMaterial sPspDrawMaterial;
 static PspDrawPixelState sPspDrawPixelState;
+static int sGsMirrorDepthOnly;
+static unsigned sGsMirrorDepthOnlyDraws,sGsMirrorNativeZPixels,sGsMirrorZNeverDraws;
+unsigned Gs_PspMirrorDepthOnlyDraws(void){return sGsMirrorDepthOnlyDraws;}
+unsigned Gs_PspMirrorNativeZPixels(void){return sGsMirrorNativeZPixels;}
+unsigned Gs_PspMirrorZNeverDraws(void){return sGsMirrorZNeverDraws;}
 static unsigned sPspMaterialDraws,sPspMaterialTexels;
 unsigned Gs_PspMaterialDraws(void){return sPspMaterialDraws;}
 unsigned Gs_PspMaterialTexels(void){return sPspMaterialTexels;}
@@ -1294,6 +1300,21 @@ static void pixel(Target *sf, int ctx, int x, int y, uint32_t z, uint32_t src) {
         default: if (z <= zd) { sPix[2]++; return; } break;
         }
     }
+#ifdef PORT_PSP
+    if (sGsMirrorActive && sGsMirrorDepthOnly) {
+        /* Native PSP CPU-Z path. The PS2 FBMSK is all ones and ATE
+           is disabled: source RGBA, blending, destination colour and
+           TEX0/CLUT cannot affect any pixel memory. The GS Z test
+           above still executes normally, and the 4 MiB byte-exact
+           depth plane is written in the ORIGINAL swizzled address.
+           Keep the reference drawn-pixel counters for parity. */
+        ++sf->drawn;
+        ++sPix[3];
+        vram_rw(zbp,fbw,zpsm,(uint32_t)x,(uint32_t)y,1,z);
+        ++sGsMirrorNativeZPixels;
+        return;
+    }
+#endif
     /* The existing mirror unconditionally reads the destination
        framebuffer even for unblended draws. Its colour is referenced
        ONLY by PS2 ALPHA blending below. For ordinary opaque geometry,
@@ -1424,6 +1445,16 @@ static void draw_sprite(Target *sf, int ctx, const Vertex *a, const Vertex *b) {
         }
         if (before) sGsMirrorCandidatesAvoided+=before-
                    (unsigned long long)(xb-xa)*(unsigned long long)(yb-ya);
+    }
+#endif
+#ifdef PORT_PSP
+    if (sGsMirrorActive && sGsMirrorDepthOnly) {
+        /* No UV, texel, CLUT or RGBA needed for a fully-masked
+           framebuffer and alpha test disabled. Preserve exact
+           scissor, Z, test order and per-pixel VRAM writes. */
+        for (y=ya;y<yb;y++)for(x=xa;x<xb;x++)
+            pixel(sf,ctx,x,y,b->z,0u);
+        return;
     }
 #endif
     for (y = ya; y < yb; y++) {
@@ -1559,6 +1590,15 @@ static void draw_triangle(Target *sf, int ctx, const Vertex *a, const Vertex *b,
             if (w0 < 0.0 || w1 < 0.0 || w2 < -1e-9) {
                 continue;
             }
+#ifdef PORT_PSP
+            if(sGsMirrorActive && sGsMirrorDepthOnly) {
+                pixel(sf,ctx,x,y,
+                      (uint32_t)((double)a->z*w0+(double)b->z*w1+
+                                  (double)c->z*w2+0.5),
+                      0u);
+                continue; /* no colour interpolation or texture fetch */
+            }
+#endif
             if (gouraud) {
                 col = (uint32_t)(a->r * w0 + b->r * w1 + c->r * w2 + 0.5) | (uint32_t)(a->g * w0 + b->g * w1 + c->g * w2 + 0.5) << 8 |
                       (uint32_t)(a->b * w0 + b->b * w1 + c->b * w2 + 0.5) << 16 | (uint32_t)(a->a * w0 + b->a * w1 + c->a * w2 + 0.5) << 24;
@@ -1602,6 +1642,10 @@ void Gs_PspMirrorDraw(int type,int ctx,const GsVertex *v) {
         ++sGsMirrorNoopDraws;
         return;
     }
+    if(PspGsMirror_ZNever(gs.test[ctx])) {
+        ++sGsMirrorZNeverDraws;
+        return;
+    }
     if(++sGsMirrorDrawStamp==0u) {
         memset(sGsMirrorPageStamp,0,sizeof(sGsMirrorPageStamp));
         sGsMirrorDrawStamp=1u;
@@ -1616,8 +1660,14 @@ void Gs_PspMirrorDraw(int type,int ctx,const GsVertex *v) {
             gs.scissor[ctx],gs.frame[ctx],depthBits);
     }
     ++sPspMaterialDraws;
+    sGsMirrorDepthOnly=PspGsMirror_DepthOnly(gs.frame[ctx],
+                                   gs.test[ctx],gs.zbuf[ctx]);
+    if(sGsMirrorDepthOnly)++sGsMirrorDepthOnlyDraws;
     sGsMirrorActive=1;
-    Gs_PspMirrorClutBegin(ctx,type,v);
+    /* Depth-only primitives must not read texture/CLUT or allocate
+       palette conversion work.  Other primitives preserve the exact
+       aliased palette cache. */
+    if(!sGsMirrorDepthOnly)Gs_PspMirrorClutBegin(ctx,type,v);
     unsigned dirtyBefore=sGsMirrorDirtyPages;
     /* Direct wall-clock accounting, not a x16/x32 sample estimate:
        confirms whether PS2 32-bit GS mirror is consuming the chain. */
@@ -1633,6 +1683,7 @@ void Gs_PspMirrorDraw(int type,int ctx,const GsVertex *v) {
     default: break;
     }
     sGsMirrorActive=0;
+    sGsMirrorDepthOnly=0;
     sGsMirrorClut.ready=0u; /* one GS primitive only */
     sGsMirrorCpuTotalUs+=Psp_TimeUs()-mirrorStartedUs;
     ++sGsMirrorDraws;
