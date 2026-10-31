@@ -19,10 +19,10 @@ int main(void){
         float bx=(float)((int)(rnd()%4096u)-2048)*0.25f;
         float by=(float)((int)(rnd()%4096u)-2048)*0.25f;
         for(y=0;y<16u;y++){
-            float yf=(float)(int)((rnd()%1024u)-512u);
+            float yf=(float)((int)(rnd()%1024u)-512);
             GsMirrorEdgeRow row=GsMirror_EdgeRow(ax,ay,bx,by,yf);
             for(x=0;x<128u;x++){
-                float xf=(float)(int)((rnd()%1024u)-512u);
+                float xf=(float)((int)(rnd()%1024u)-512);
                 float src=reference(ax,ay,bx,by,xf,yf);
                 float dst=GsMirror_EdgeAt(&row,xf);
                 assert(identical(src,dst));
