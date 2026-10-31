@@ -88,9 +88,11 @@ static int sGsMirrorActive;
  * cache BEFORE the next texel fetch sees the updated palette. */
 static GsMirrorClutCache sGsMirrorClut;
 static unsigned sGsMirrorClutPrimed,sGsMirrorClutHits,sGsMirrorClutAliased;
+static unsigned sGsMirrorClutSmallSkipped;
 unsigned Gs_PspMirrorClutPrimed(void){return sGsMirrorClutPrimed;}
 unsigned Gs_PspMirrorClutHits(void){return sGsMirrorClutHits;}
 unsigned Gs_PspMirrorClutAliased(void){return sGsMirrorClutAliased;}
+unsigned Gs_PspMirrorClutSmallSkipped(void){return sGsMirrorClutSmallSkipped;}
 extern unsigned long long Psp_TimeUs(void);
 static unsigned long long sGsMirrorCpuTotalUs,sGsMirrorCpuLastReportUs;
 unsigned Gs_PspMirrorTakeCpuMs(void) {
@@ -1057,15 +1059,46 @@ uint32_t Gs_Expand(uint32_t c, uint32_t psm) {
 /* Each source palette entry is read through the original PS2 GS
  * swizzle and TEXA expansion ONCE per primitive, then reused while
  * the same byte-addressable GS pages remain unchanged. */
-static void Gs_PspMirrorClutBegin(int ctx) {
+static void Gs_PspMirrorClutBegin(int ctx,int type,const GsVertex *v) {
     uint64_t t0=gs.tex0[ctx];
     unsigned psm=(unsigned)((t0>>20)&63u);
     unsigned bits=(unsigned)Gs_PsmBits(psm);
     unsigned cbp=(unsigned)((t0>>37)&0x3fffu);
     unsigned cpsm=(unsigned)((t0>>51)&15u);
     unsigned i,count;
+    float minx,maxx,miny,maxy;
+    uint64_t sc;
+    int n;
     GsMirrorClut_Begin(&sGsMirrorClut);
     if (!(gs.prim & (1ull<<4)) || (bits!=8u && bits!=4u))return;
+    /* CLUT materialization has 16 or 256 GS VRAM reads. Do not
+       spend that upfront on the extremely numerous one-pixel native
+       fighter/stage triangles. Only large texture-covered primitives
+       amortize the cost; short primitives retain the exact scalar
+       lookup. Clamp to GS scissor before estimating pixel count. */
+    if (!v || (type!=3 && type!=6)) {++sGsMirrorClutSmallSkipped;return;}
+    n=type==3?3:2;
+    minx=maxx=v[0].x;miny=maxy=v[0].y;
+    for(i=1u;i<(unsigned)n;i++) {
+        if(v[i].x<minx)minx=v[i].x;
+        if(v[i].x>maxx)maxx=v[i].x;
+        if(v[i].y<miny)miny=v[i].y;
+        if(v[i].y>maxy)maxy=v[i].y;
+    }
+    if(!isfinite(minx)||!isfinite(maxx)||
+       !isfinite(miny)||!isfinite(maxy)){
+        ++sGsMirrorClutSmallSkipped;return;
+    }
+    sc=gs.scissor[ctx];
+    if(minx<(float)(sc&0x7ffu))minx=(float)(sc&0x7ffu);
+    if(maxx>(float)((sc>>16)&0x7ffu))maxx=(float)((sc>>16)&0x7ffu);
+    if(miny<(float)((sc>>32)&0x7ffu))miny=(float)((sc>>32)&0x7ffu);
+    if(maxy>(float)((sc>>48)&0x7ffu))maxy=(float)((sc>>48)&0x7ffu);
+    if(minx<0.f)minx=0.f;if(maxx>1023.f)maxx=1023.f;
+    if(miny<0.f)miny=0.f;if(maxy>1023.f)maxy=1023.f;
+    if((maxx-minx)*(maxy-miny)<1024.f) {
+        ++sGsMirrorClutSmallSkipped;return;
+    }
     count=bits==8u ? 256u : 16u;
     for(i=0u;i<count;i++){
         unsigned e=GsMirrorClut_Csm1(i,bits);
@@ -1496,7 +1529,7 @@ void Gs_PspMirrorDraw(int type,int ctx,const GsVertex *v) {
         sGsMirrorDrawStamp=1u;
     }
     sGsMirrorActive=1;
-    Gs_PspMirrorClutBegin(ctx);
+    Gs_PspMirrorClutBegin(ctx,type,v);
     unsigned dirtyBefore=sGsMirrorDirtyPages;
     /* Direct wall-clock accounting, not a x16/x32 sample estimate:
        confirms whether PS2 32-bit GS mirror is consuming the chain. */
