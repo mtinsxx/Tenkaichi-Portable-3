@@ -34,6 +34,7 @@
 #include "gs_mirror_fast.h"
 #include "gs_mirror_row_span.h"
 #include "gs_mirror_scanline.h"
+#include "gs_mirror_edge_row.h"
 #include "gs_mirror_word_delta.h"
 #endif
 
@@ -1325,6 +1326,15 @@ static void draw_triangle(Target *sf, int ctx, const Vertex *a, const Vertex *b,
     for (y = (int)miny; y <= (int)maxy; y++) {
         int rowFirst=(int)minx,rowLast=(int)maxx;
 #ifdef PORT_PSP
+        GsMirrorEdgeRow rowBC,rowCA;
+        if(sGsMirrorActive) {
+            /* Exact same float expression as edge(): only the
+               per-row Y-independent X terms are hoisted. No running
+               float accumulation and NO approximation of double
+               barycentric division or original alpha/depth math. */
+            rowBC=GsMirror_EdgeRow(b->x,b->y,c->x,c->y,(float)y);
+            rowCA=GsMirror_EdgeRow(c->x,c->y,a->x,a->y,(float)y);
+        }
         if (sGsMirrorActive && rowFirst<=rowLast) {
             /* Exact virtual GS FB scanline: analytically constrain the
              * horizontal range conservatively before invoking expensive
@@ -1362,8 +1372,17 @@ static void draw_triangle(Target *sf, int ctx, const Vertex *a, const Vertex *b,
                BEFORE two double-precision divides, depth interpolation
                and texture/CLUT sampling. Covered pixels still execute
                the ORIGINAL double math and the third-weight tolerance. */
+#ifdef PORT_PSP
+            float e0 = sGsMirrorActive ?
+                GsMirror_EdgeAt(&rowBC,(float)x) :
+                edge(b,c,(float)x,(float)y);
+            float e1 = sGsMirrorActive ?
+                GsMirror_EdgeAt(&rowCA,(float)x) :
+                edge(c,a,(float)x,(float)y);
+#else
             float e0 = edge(b,c,(float)x,(float)y);
             float e1 = edge(c,a,(float)x,(float)y);
+#endif
 #ifdef PORT_PSP
             if (sGsMirrorActive && GsMirror_EarlyReject(area,e0,e1)) {
                 ++sGsMirrorEarlyRejected;

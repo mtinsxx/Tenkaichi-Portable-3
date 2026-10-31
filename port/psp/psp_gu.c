@@ -55,6 +55,7 @@
 #include "psp_gs_fb_reconstruct.h"
 #include "psp_fb_feedback_provenance.h"
 #include "psp_fb_snapshot_recycle.h"
+#include "psp_fb_snapshot_pool.h"
 #include "psp_stage_compose.h"
 #include "psp_tex_reuse.h"
 #include "psp_gs_no_effect.h"
@@ -398,6 +399,11 @@ static unsigned sFbSnapshotsSaved, sFbSnapshotsSampled;
 static unsigned sFbScreenRebindRestores, sFbScreenRebindMissed;
 static unsigned sFbSnapshotsAllocFail, sFbSnapshotsDeferred;
 static unsigned sFbSnapshotAllocs, sFbSnapshotBudgetSkip;
+/* One early allocation for all future logical-FBP 5551 snapshots.
+ * Fallback to old lazy malloc if the PSP boot heap is already tight. */
+static void *sFbSnapshotPoolRaw,*sFbSnapshotPool;
+static unsigned sFbSnapshotPoolCapacity,sFbSnapshotPoolNext;
+static unsigned sFbSnapshotPoolHits,sFbSnapshotPoolLazyFallback;
 static unsigned sFbSnapshotRecycled;
 static unsigned sFbAliasHit, sFbAliasFallback, sFbAliasReupload;
 static unsigned sFbAliasUnrendered, sFbAliasSelf, sFbWorkOwnerChanges;
@@ -782,10 +788,26 @@ static int snapshot_target(int slot) {
                 return 0;
             }
         } else {
-            t->snapshotRaw=malloc(PSP_GS_FB_SNAPSHOT_BYTES+63u);
-            if(!t->snapshotRaw) {++sFbSnapshotsAllocFail;return 0;}
-            aligned=((uintptr_t)t->snapshotRaw+63u)&~(uintptr_t)63u;
-            t->snapshot=(void *)aligned;
+            /* The pool stores only physical GE-readable RGB5551 image
+               copies. Logical GS 32-bit/PSMT8 feedback is still handled
+               by gs_core.c's separate exact 4 MiB mirror. */
+            if (sFbSnapshotPoolNext<sFbSnapshotPoolCapacity) {
+                t->snapshot=PspGsFb_PoolSlot(sFbSnapshotPool,
+                              sFbSnapshotPoolNext,sFbSnapshotPoolCapacity);
+                if(!t->snapshot) {
+                    ++sFbSnapshotsAllocFail;
+                    return 0;
+                }
+                t->snapshotRaw=t->snapshot;
+                ++sFbSnapshotPoolNext;
+                ++sFbSnapshotPoolHits;
+            } else {
+                t->snapshotRaw=malloc(PSP_GS_FB_SNAPSHOT_BYTES+63u);
+                if(!t->snapshotRaw) {++sFbSnapshotsAllocFail;return 0;}
+                aligned=((uintptr_t)t->snapshotRaw+63u)&~(uintptr_t)63u;
+                t->snapshot=(void *)aligned;
+                ++sFbSnapshotPoolLazyFallback;
+            }
             ++sFbSnapshotAllocs;
         }
         /* Zero GE texture's unused padding after EACH pool rebind.
@@ -3480,6 +3502,26 @@ int Psp_GuInit(void) {
     Psp_Log("psp: fighter dual-layer triangle batching [fighter-gs-batch-20261026] native_fighter_batch=%d\n",
             gPspNativeFighterBatch);
     sMainDrawOffset = FB0_OFF;
+    /* Before game assets and GS texture decoding fragment the PSP heap,
+       reserve the EXISTING 1.5 MiB framebuffer snapshot budget as one
+       contiguous main-RAM block. No additional GE VRAM or page storage.
+       If the full 3-snapshot reservation cannot fit, try 2, then 1.
+       Any remaining snapshots retain the conservative lazy allocation
+       fallback, so boot never depends on this optimization. */
+    {
+        unsigned count;
+        for(count=MAX_FB_SNAPSHOTS;count>=1u;--count) {
+            sFbSnapshotPoolRaw=malloc(PspGsFb_PoolBytes(count));
+            if(sFbSnapshotPoolRaw) {
+                sFbSnapshotPool=PspGsFb_PoolAligned(sFbSnapshotPoolRaw);
+                sFbSnapshotPoolCapacity=count;
+                break;
+            }
+        }
+        Psp_Log("psp: GS framebuffer snapshot preallocation: reserved=%u/%u images (%u KiB main RAM; no PSP VRAM; no extra memory versus old cap)\n",
+                sFbSnapshotPoolCapacity,(unsigned)MAX_FB_SNAPSHOTS,
+                sFbSnapshotPoolCapacity*PSP_GS_FB_SNAPSHOT_BYTES/1024u);
+    }
     /* Homebrew PSP may have limited heap when game tables are resident.
        Degrade arena size before failing boot; a smaller arena simply
        requires more GPU fences, never unsafe reuse of queued vertices. */
@@ -3635,6 +3677,10 @@ void Psp_GuStats(unsigned out[4]) {
     sNativeStageProjectionRejects=0;
     sNativeStageCachedClipTriangles = 0;
     sNativeStageClipTriangles = sNativeStageClipOutside = sNativeStageClipFailed = 0;
+    Psp_Log("psp: GS snapshot pool: reserved=%u assigned=%u pool-new=%u lazy-new=%u (max 3 x 512x512 RGB5551, all main RAM)\n",
+            sFbSnapshotPoolCapacity,sFbSnapshotPoolNext,
+            sFbSnapshotPoolHits,sFbSnapshotPoolLazyFallback);
+    sFbSnapshotPoolHits=sFbSnapshotPoolLazyFallback=0;
     Psp_Log("psp: GS framebuffer virtualization: saved=%u sampled-after-owner-change=%u allocation-failed=%u budget-skipped=%u active-snapshots=%u/%u recycled-stale=%u deferred=%u physical-rebind-invalidations=%u; GS alpha/indexed feedback still unavailable\n",
             sFbSnapshotsSaved,sFbSnapshotsSampled,sFbSnapshotsAllocFail,
             sFbSnapshotBudgetSkip,sFbSnapshotAllocs,(unsigned)MAX_FB_SNAPSHOTS,
