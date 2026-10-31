@@ -85,6 +85,7 @@ static uint32_t sGsMirrorPageStamp[TP3_GS_VRAM_PAGES];
 static uint32_t sGsMirrorDrawStamp;
 static int sGsMirrorActive;
 static PspDrawMaterial sPspDrawMaterial;
+static PspDrawPixelState sPspDrawPixelState;
 static unsigned sPspMaterialDraws,sPspMaterialTexels;
 unsigned Gs_PspMaterialDraws(void){return sPspMaterialDraws;}
 unsigned Gs_PspMaterialTexels(void){return sPspMaterialTexels;}
@@ -1204,11 +1205,29 @@ uint32_t Gs_TexelOf(uint64_t t0, int u, int v) {
 /* ------------------------------------------------------------------------------------------------ pixels */
 
 static void pixel(Target *sf, int ctx, int x, int y, uint32_t z, uint32_t src) {
-    uint64_t test = gs.test[ctx], al = gs.alpha[ctx], zb = gs.zbuf[ctx], pr = gs.prim;
-    uint64_t sc = gs.scissor[ctx], fr = gs.frame[ctx];
-    uint32_t fbp = (fr & 0x1FF) << 5, fbw = (fr >> 16) & 0x3F, fpsm = (fr >> 24) & 0x3F;
-    uint32_t d, sr, sg, sb, sa, out[3], zbp, zpsm, zmax;
-    int i, write_rgb = 1, write_z = !((zb >> 32) & 1);
+    uint64_t test,al,zb,pr,sc,fr;
+    uint32_t fbp,fbw,fpsm;
+    uint32_t d,sr,sg,sb,sa,out[3],zbp,zpsm,zmax;
+    int i,write_rgb=1,write_z;
+#ifdef PORT_PSP
+    if(sGsMirrorActive) {
+        /* This is immutable across the primitive; all PS2 framebuffer
+           and depth bitfield parsing was done before its first pixel. */
+        const PspDrawPixelState *p=&sPspDrawPixelState;
+        test=p->test;al=p->alpha;zb=p->zbuf;pr=p->prim;
+        sc=p->scissor;fr=p->frame;
+        fbp=p->fbp;fbw=p->fbw;fpsm=p->fpsm;
+        write_z=p->writeZ;
+    } else
+#endif
+    {
+        test=gs.test[ctx];al=gs.alpha[ctx];zb=gs.zbuf[ctx];pr=gs.prim;
+        sc=gs.scissor[ctx];fr=gs.frame[ctx];
+        fbp=(uint32_t)(fr&0x1ffu)<<5u;
+        fbw=(uint32_t)((fr>>16)&0x3fu);
+        fpsm=(uint32_t)((fr>>24)&0x3fu);
+        write_z=!((zb>>32)&1u);
+    }
 
     /* BT3_GS_PROBE=x,y: in the BT3_GS_DUMP frame, report every primitive that reaches this pixel */
     if (sDumpFrame == (int)sFrame && x == sProbeX && y == sProbeY) {
@@ -1251,9 +1270,18 @@ static void pixel(Target *sf, int ctx, int x, int y, uint32_t z, uint32_t src) {
     }
     /* The depth buffer lives in GS memory like everything else (the game clears it by drawing into it as a frame
        buffer and reads it as a texture): ZBUF.ZBP, the frame's width, format 0x30 + ZBUF.PSM. */
-    zbp = (uint32_t)(zb & 0x1FF) << 5;
-    zpsm = 0x30 | (uint32_t)((zb >> 24) & 15);
-    zmax = Gs_PsmBits(zpsm) == 32 ? 0xFFFFFFFFu : Gs_PsmBits(zpsm) == 24 ? 0xFFFFFFu : 0xFFFFu;
+#ifdef PORT_PSP
+    if(sGsMirrorActive) {
+        zbp=sPspDrawPixelState.zbp;
+        zpsm=sPspDrawPixelState.zpsm;
+        zmax=sPspDrawPixelState.zmax;
+    } else
+#endif
+    {
+        zbp = (uint32_t)(zb & 0x1FF) << 5;
+        zpsm = 0x30 | (uint32_t)((zb >> 24) & 15);
+        zmax = Gs_PsmBits(zpsm) == 32 ? 0xFFFFFFFFu : Gs_PsmBits(zpsm) == 24 ? 0xFFFFFFu : 0xFFFFu;
+    }
     if (z > zmax) {
         z = zmax;
     }
@@ -1580,6 +1608,13 @@ void Gs_PspMirrorDraw(int type,int ctx,const GsVertex *v) {
     }
     sPspDrawMaterial=PspDrawMaterial_Decode(gs.tex0[ctx],
                               gs.clamp[ctx],gs.prim);
+    {
+        unsigned zpsm=0x30u|(unsigned)((gs.zbuf[ctx]>>24)&15u);
+        unsigned depthBits=(unsigned)Gs_PsmBits(zpsm);
+        sPspDrawPixelState=PspDrawPixelState_Decode(
+            gs.test[ctx],gs.alpha[ctx],gs.zbuf[ctx],gs.prim,
+            gs.scissor[ctx],gs.frame[ctx],depthBits);
+    }
     ++sPspMaterialDraws;
     sGsMirrorActive=1;
     Gs_PspMirrorClutBegin(ctx,type,v);
