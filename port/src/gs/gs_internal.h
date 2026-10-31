@@ -52,6 +52,8 @@ unsigned Gs_PspMirrorClutPrimed(void);
 unsigned Gs_PspMirrorClutHits(void);
 unsigned Gs_PspMirrorClutAliased(void);
 unsigned Gs_PspMirrorClutSmallSkipped(void);
+unsigned Gs_PspMaterialDraws(void);
+unsigned Gs_PspMaterialTexels(void);
 unsigned Gs_PspMirrorTakeCpuMs(void);
 unsigned Gs_PspMirrorDirtyPageCount(void);
 unsigned Gs_PspMirrorTrackedCount(void);

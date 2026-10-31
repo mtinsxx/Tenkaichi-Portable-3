@@ -189,6 +189,12 @@ jobs:
           gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/src/gs port/psp/test_gs_mirror_fast.c -lm -o /tmp/tp3-gs-mirror-fast
           /tmp/tp3-gs-mirror-fast
 
+      - name: Test PSP-native per-draw material/frame translation parity
+        run: |
+          gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/src/gs \
+            port/psp/test_native_draw_material.c -o /tmp/tp3-native-draw
+          /tmp/tp3-native-draw
+
       - name: Test native PSP GU T4 texture packing and swizzling
         run: |
           gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/psp \
