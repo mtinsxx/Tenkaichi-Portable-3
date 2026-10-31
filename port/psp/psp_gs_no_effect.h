@@ -11,7 +11,12 @@
  *     fragment before colour or depth writes; the other AFAIL modes
  *     must not be culled.
  *
- * Return 1 for all-masked, 2 for guaranteed alpha discard, 0 otherwise.
+ * (3) TEST.ZTE enabled and ZTST=NEVER: no fragment can reach a
+ *     framebuffer or depth write. AFAIL only selects write planes on
+ *     alpha failure; it does not override the subsequent depth test.
+ *
+ * Return 1 for all-masked, 2 for guaranteed alpha discard,
+ * 3 for Z-test NEVER, 0 otherwise.
  * Colour-only / depth-only draws are deliberately kept. */
 static inline int PspGs_GuaranteedNoEffect(uint64_t frame,
                                          uint64_t zbuf,
@@ -23,6 +28,9 @@ static inline int PspGs_GuaranteedNoEffect(uint64_t frame,
         ((test >> 1)&UINT64_C(7))==0u &&
         ((test >> 12)&UINT64_C(3))==0u)
         return 2;
+    if (((test >> 16)&UINT64_C(1))!=0u &&
+        ((test >> 17)&UINT64_C(3))==0u)
+        return 3;
     return 0;
 }
 #endif

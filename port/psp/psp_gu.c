@@ -59,6 +59,7 @@
 #include "psp_stage_compose.h"
 #include "psp_tex_reuse.h"
 #include "psp_gs_no_effect.h"
+#include "psp_mirror_depth_only.h"
 #include "psp_tex_lru.h"
 #include "psp_t8_native.h"
 #include "psp_t4_native.h"
@@ -243,7 +244,7 @@ static unsigned sFrame;
 static PspDiagAll sPspLogAll;
 static unsigned sDraws, sSkipped, sNewTex, sBatches;
 static unsigned sGsEmptyClipRejects, sGsPrimitiveClipRejects;
-static unsigned sGsNoEffectMasked, sGsNoEffectAlphaNever;
+static unsigned sGsNoEffectMasked, sGsNoEffectAlphaNever, sGsNoEffectZNever;
 static unsigned sGsNativeStaticSkips;
 static unsigned sGsFbMaskDraws,sGsFbMaskPartial,sGsFbMaskAlphaOnly;
 static unsigned sLastDrawStaticSkip;
@@ -2077,7 +2078,8 @@ void GsGpu_Draw(int type, int ctx, const GsVertex *v) {
                            frame,gGs.zbuf[ctx],test);
         if(noEffect) {
             if(noEffect==1) ++sGsNoEffectMasked;
-            else ++sGsNoEffectAlphaNever;
+            else if(noEffect==2) ++sGsNoEffectAlphaNever;
+            else ++sGsNoEffectZNever;
             ++sSkipped;
             return;
         }
@@ -3773,9 +3775,12 @@ void Psp_GuStats(unsigned out[4]) {
     Psp_Log("psp: GS PSMCT16/16S direct colour: native=%u legacy-skipped=%u option=%d (depth-texture/GS-VRAM swizzle still unsupported)\n",
             sDiagFb16Native, sDiagSkip16, gPspGsFb16);
     sDiagFb16Native = 0;
-    Psp_Log("psp: GS no-effect draw elimination: FBMSK-all-and-ZMSK=%u alpha-never-keep=%u (exact PS2 no-write semantics, before GU/TEX0)\n",
-            sGsNoEffectMasked,sGsNoEffectAlphaNever);
-    sGsNoEffectMasked=sGsNoEffectAlphaNever=0;
+    Psp_Log("psp: GS no-effect draw elimination: FBMSK-all-and-ZMSK=%u alpha-never-keep=%u depth-test-never=%u (exact PS2 no-write semantics, before GU/TEX0)\n",
+            sGsNoEffectMasked,sGsNoEffectAlphaNever,sGsNoEffectZNever);
+    sGsNoEffectMasked=sGsNoEffectAlphaNever=sGsNoEffectZNever=0;
+    Psp_Log("psp: GS native depth-only mirrored raster: draws=%u depth-pixels=%u Z-never-mirror-skips=%u (full GS VRAM Z-format preserved)\n",
+            Gs_PspMirrorDepthOnlyDraws(),Gs_PspMirrorNativeZPixels(),
+            Gs_PspMirrorZNeverDraws());
     Psp_Log("psp: GS source scissor culling: empty=%u fully-outside=%u (before texture cache/GE)\n",
             sGsEmptyClipRejects,sGsPrimitiveClipRejects);
     sGsEmptyClipRejects=sGsPrimitiveClipRejects=0;

@@ -54,6 +54,10 @@ unsigned Gs_PspMirrorClutAliased(void);
 unsigned Gs_PspMirrorClutSmallSkipped(void);
 unsigned Gs_PspMaterialDraws(void);
 unsigned Gs_PspMaterialTexels(void);
+/* PSP-native depth-only pass counts: exact PS2 Z byte layout retained. */
+unsigned Gs_PspMirrorDepthOnlyDraws(void);
+unsigned Gs_PspMirrorNativeZPixels(void);
+unsigned Gs_PspMirrorZNeverDraws(void);
 unsigned Gs_PspMirrorTakeCpuMs(void);
 unsigned Gs_PspMirrorDirtyPageCount(void);
 unsigned Gs_PspMirrorTrackedCount(void);
