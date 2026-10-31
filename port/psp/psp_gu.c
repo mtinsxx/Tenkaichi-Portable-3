@@ -61,6 +61,7 @@
 #include "psp_gs_no_effect.h"
 #include "psp_tex_lru.h"
 #include "psp_t8_native.h"
+#include "psp_t4_native.h"
 #include "psp_native_t8_pack.h"
 #include "psp_native_color_pack.h"
 #include "psp_native_mesh_preview.h"
@@ -209,6 +210,7 @@ static int sTexSwizzled;     /* layout of the last cache-hit/new texture */
 static void *sTexClut;      /* T8 CLUT attached to the last cache hit/miss */
 static uint32_t sTexClutTicket, sClutTicketNext;
 static unsigned sT8NativeNew, sT8NativeHits, sT8NativeSaved;
+static unsigned sT4NativeNew, sT4NativeHits, sT4NativeSaved;
 static unsigned sT8RefVerified, sT8RefMismatch, sT8RefRebuilt;
 /* Fixed-size 4x64 KiB source-index cache: retains four independent
  * PSMT8 images without increasing the old 256 KiB RAM footprint.
@@ -1155,7 +1157,8 @@ static void *texture_get(int ctx, unsigned lodCap, int white_sprite,
         sTexSwizzled = t->swizzled;
         sTexClut = t->clut;
         sTexClutTicket = t->clutTicket;
-        if (t->clut) ++sT8NativeHits;
+        if (t->fmt==GU_PSM_T8) ++sT8NativeHits;
+        else if (t->fmt==GU_PSM_T4) ++sT4NativeHits;
         if (sampleKey) {
             sProfKeySampleUs += Psp_TimeUs() - keyStartUs;
             ++sProfKeySamples;
@@ -1215,7 +1218,8 @@ static void *texture_get(int ctx, unsigned lodCap, int white_sprite,
             sTexSwizzled = sTex[i].swizzled;
             sTexClut = sTex[i].clut;
             sTexClutTicket = sTex[i].clutTicket;
-            if (sTexClut) ++sT8NativeHits;
+            if (sTex[i].fmt==GU_PSM_T8) ++sT8NativeHits;
+            else if (sTex[i].fmt==GU_PSM_T4) ++sT4NativeHits;
             if (sampleKey) {
                 sProfKeySampleUs += Psp_TimeUs() - keyStartUs;
                 ++sProfKeySamples;
@@ -1382,6 +1386,79 @@ static void *texture_get(int ctx, unsigned lodCap, int white_sprite,
                              (unsigned long long)tw*th;
         }
         *tw_out=(int)tw; *th_out=(int)th; *fmt_out=GU_PSM_T8;
+        tex_temp_free(idx);
+        sProfDecodeUs+=Psp_TimeUs()-decodeStartUs;
+        ++sProfDecodeCount;
+        return ptr;
+    }
+    /* Native PSP GU CLUT4 path for ordinary PS2 PSMT4 (0x14).
+       The GE samples the 4-bit indices directly, so we no longer
+       expand every texel into 16/32-bit CPU RGBA at each miss.
+       Preserve CSM1 palette ordering and TEXA using the original
+       GS reader, then stage 16 RGB8888 entries (32 GU CLUT blocks,
+       unused entries initialized to 0) next to packed texture bytes.
+       High-nibble indexed formats PSMT4HL/HH, white-font variants,
+       and unsupported tiny/non-tiled textures retain old fallback. */
+    if (PspT4_NativeEligible(psm,tw,th,white_sprite)) {
+        uint8_t *idx;
+        uint32_t *palette;
+        void *ptr=NULL,*heap_alloc=NULL;
+        unsigned indexBytes=PspT4_AlignedBytes(tw,th);
+        unsigned allocated=PspT4_AllocatedBytes(tw,th);
+        unsigned pixelCount=tw*th;
+        if(sScratchIndices && Psp_TexUseScratch(
+                readW*readH,PSP_TEX_SCRATCH_INDEX_BYTES)) {
+            idx=sScratchIndices; ++sScratchIndicesUses;
+        } else {
+            idx=tex_malloc_pressure((size_t)readW*readH);
+        }
+        if(!idx)return NULL;
+        if(!Gs_VramReadIdx8(tbp,tbw,psm,readW,readH,idx,readW)) {
+            tex_temp_free(idx);
+            return NULL;
+        }
+        if(readW!=tw || readH!=th)
+            Psp_LodSubsample8(idx,readW,readH,tw,th);
+        PspT4_PackInPlace(idx,pixelCount);
+        if(sTexCount>=MAX_TEX)tex_evict(0);
+        if(allocated<=MAX_TEX_BYTES/2u &&
+           ((allocated+63u)&~63u)<=MAX_TEX_BYTES-sTexMem)
+            ptr=tex_alloc(allocated);
+        if(!ptr)ptr=tex_alloc_ram(allocated,&heap_alloc);
+        if(!ptr) {tex_temp_free(idx);return NULL;}
+        palette=(uint32_t *)((uint8_t *)ptr+indexBytes);
+        /* width/2 is the 4-bit row in BYTES, not pixel units. */
+        swizzle((unsigned char *)ptr,idx,tw/2u,th,1);
+        memset(palette,0,1024u);
+        for(i=0u;i<16u;i++) {
+            uint32_t c0=Gs_VramRead(cbp,1u,cpsm,i&7u,i>>3u);
+            palette[i]=PspT8_GuPaletteColor(Gs_Expand(c0,cpsm));
+        }
+        if(heap_alloc)
+            sceKernelDcacheWritebackRange(ptr,allocated);
+        sceGuTexFlush();
+        t=&sTex[sTexCount++];
+        Psp_TexReuseRemember(&sTexReuse[reuseSlot],t0,texa,
+                 gGsPspTextureEpoch,sTexSerial,lodCap,
+                 white_sprite,(unsigned)(sTexCount-1));
+        t->tex0=t0;t->texa=texa;t->gen=gen;
+        t->sourceGen=indexGen;t->ptr=ptr;t->heap_alloc=heap_alloc;
+        t->clut=palette;t->w=tw;t->h=th;t->bytes=allocated;
+        t->fmt=GU_PSM_T4;t->swizzled=1;
+        t->white_sprite=0;t->last=sFrame;
+        t->useTicket=++sTexUseTicket;
+        t->clutTicket=++sClutTicketNext;
+        sTexSwizzled=1;sTexClut=palette;
+        sTexClutTicket=t->clutTicket;
+        ++sNewTex;++sT4NativeNew;
+        if(tw*th*2u>allocated)
+            sT4NativeSaved+=tw*th*2u-allocated;
+        if(tw!=readW || th!=readH) {
+            ++sLodReduced;
+            sLodPixelsSaved+=(unsigned long long)readW*readH-
+                             (unsigned long long)tw*th;
+        }
+        *tw_out=(int)tw;*th_out=(int)th;*fmt_out=GU_PSM_T4;
         tex_temp_free(idx);
         sProfDecodeUs+=Psp_TimeUs()-decodeStartUs;
         ++sProfDecodeCount;
@@ -3848,6 +3925,9 @@ void Psp_GuStats(unsigned out[4]) {
             sProfDrawCalls, sProfDrawSamples);
     sProfDrawCalls = sProfDrawSamples = 0;
     sProfDrawSampleUs = 0;
+    Psp_Log("psp: native PSP GU CLUT4 PSMT4: new=%u cache-hits=%u RGBA5551-storage-saved=%uKB (16 GS palette colors, no high-plane aliases)\n",
+            sT4NativeNew,sT4NativeHits,sT4NativeSaved/1024u);
+    sT4NativeNew=sT4NativeHits=sT4NativeSaved=0;
     Psp_Log("psp: indexed PSMT8 native GU T8: new=%u cache-hits=%u decoded-storage-saved=%uKB (white-sprite unchanged)\n",
             sT8NativeNew,sT8NativeHits,sT8NativeSaved/1024u);
     sT8NativeNew=sT8NativeHits=sT8NativeSaved=0;
@@ -3961,6 +4041,9 @@ void Psp_GuStats(unsigned out[4]) {
             Gs_PspMirrorNoopDraws(),Gs_PspMirrorBadBounds());
     Psp_Log("psp: GS exact mirror CPU measured elapsed=%u ms/interval (full duration of pixel raster; no sampled extrapolation)\n",
             Gs_PspMirrorTakeCpuMs());
+    Psp_Log("psp: exact GS mirror CLUT: prepared-draws=%u per-pixel-palette-read-bypasses=%u invalidated-by-live-PS2-write=%u small-primitive-skip=%u (cumulative; PS2 palette/TEXA, 4MiB cross-PSM feedback unchanged)\n",
+            Gs_PspMirrorClutPrimed(),Gs_PspMirrorClutHits(),
+            Gs_PspMirrorClutAliased(),Gs_PspMirrorClutSmallSkipped());
     Psp_Log("psp: GS exact mirror changed-word coherence: unchanged-writes=%u changed-writes=%u identical-draws=%u (cumulative, full PS2 32-bit GS bytes)\n",
             Gs_PspMirrorUnchangedWordWrites(),Gs_PspMirrorChangedWordWrites(),
             Gs_PspMirrorIdenticalDraws());
