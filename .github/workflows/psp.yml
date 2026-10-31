@@ -197,6 +197,12 @@ jobs:
           gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/psp port/psp/test_shadow6.c -lm -o /tmp/tp3-shadow6
           /tmp/tp3-shadow6
 
+      - name: Test bit-exact PSP native GS edge-row hoisting
+        run: |
+          gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/src/gs \
+            port/psp/test_gs_mirror_edge_row.c -o /tmp/tp3-mirror-edge-row
+          /tmp/tp3-mirror-edge-row
+
       - name: Test conservative GS scanline reconstruction against original barycentric coverage
         run: |
           gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/src/gs port/psp/test_gs_mirror_scanline.c -lm -o /tmp/tp3-gs-scanline
