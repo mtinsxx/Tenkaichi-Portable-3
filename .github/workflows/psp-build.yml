@@ -189,6 +189,18 @@ jobs:
           gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/src/gs port/psp/test_gs_mirror_fast.c -lm -o /tmp/tp3-gs-mirror-fast
           /tmp/tp3-gs-mirror-fast
 
+      - name: Test native PSP GU T4 texture packing and swizzling
+        run: |
+          gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/psp \
+            port/psp/test_t4_native.c -o /tmp/tp3-native-t4
+          /tmp/tp3-native-t4
+
+      - name: Test exact per-draw GS CLUT and cross-PSM self-alias invalidation
+        run: |
+          gcc -std=c99 -O2 -Wall -Wextra -Werror -Iport/src/gs \
+            port/psp/test_gs_mirror_clut_cache.c -o /tmp/tp3-gs-clut-mirror
+          /tmp/tp3-gs-clut-mirror
+
       - name: Test native PSP GS software mirror scissor parity
         run: |
           gcc -std=c99 -Wall -Wextra -Werror -O2 -Iport/src/gs port/psp/test_gs_mirror_scissor.c -o /tmp/tp3-gs-scissor
